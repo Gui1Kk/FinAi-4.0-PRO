@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FinAI 4.0 - Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.263.1"
+        }
+    }
+    </script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.3); }
+        .glass-dark { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(10px); border-top: 1px solid rgba(255, 255, 255, 0.1); }
+        .animate-slide-up { animation: slideUp 0.3s ease-out forwards; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .loader { border-top-color: #6366f1; -webkit-animation: spinner 1s linear infinite; animation: spinner 1s linear infinite; }
+        @keyframes spinner { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useMemo } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { 
+            Plus, Trash2, Edit2, TrendingUp, TrendingDown, DollarSign, 
+            PieChart, BrainCircuit, Save, X, Target, Briefcase,
+            CreditCard, MinusCircle, Cloud, CloudLightning, Eye, EyeOff, CheckCircle, AlertCircle, Home, Flag
+        } from 'lucide-react';
+
+        // --- CONFIGURAÇÕES (Preencha aqui!) ---
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyL2MG2nRkjKsTKJngE5suUbFpyWkPTXJ9rPa1qDfYbhxJk1X-9LQk5WfJCB6P6SNjmfA/exec"; 
+        const apiKey = "AIzaSyAtAV8-K3G_ZyYrJOXRJtef_qR1jrL22XM"; 
+
+        // --- SERVIÇO DE API ---
+        const apiService = {
+            async loadData() {
+                if (!GOOGLE_SCRIPT_URL) return null;
+                try {
+                    const response = await fetch(GOOGLE_SCRIPT_URL);
+                    return await response.json();
+                } catch (error) {
+                    console.error("Erro ao carregar:", error);
+                    return null;
+                }
+            },
+            async saveData(type, data) {
+                if (!GOOGLE_SCRIPT_URL) return;
+                await fetch(GOOGLE_SCRIPT_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({ type, data }),
+                    headers: { "Content-Type": "text/plain;charset=utf-8" } 
+                });
+            }
+        };
+
+        // --- COMPONENTES UI MODERNOS ---
+        const Card = ({ children, className = "" }) => (
+            <div className={`bg-white rounded-2xl shadow-sm border border-slate-100 p-5 ${className} transition-all hover:shadow-md`}>
+                {children}
+            </div>
+        );
+
+        const Toast = ({ message, type, onClose }) => (
+            <div className={`fixed top-20 right-4 z-50 animate-slide-up flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg border ${type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+                {type === 'success' ? <CheckCircle size={20}/> : <AlertCircle size={20}/>}
+                <span className="font-medium text-sm">{message}</span>
+                <button onClick={onClose}><X size={16} className="opacity-50 hover:opacity-100"/></button>
+            </div>
+        );
+
+        const SimplePieChart = ({ data, colors }) => {
+            const total = data.reduce((acc, item) => acc + item.value, 0);
+            let cumulativePercent = 0;
+            if (total === 0) return <div className="text-center text-slate-400 text-sm p-4 italic">Sem dados visuais</div>;
+            const slices = data.map((slice, i) => {
+                const startPercent = cumulativePercent;
+                const slicePercent = slice.value / total;
+                cumulativePercent += slicePercent;
+                const x1 = Math.cos(2 * Math.PI * startPercent);
+                const y1 = Math.sin(2 * Math.PI * startPercent);
+                const x2 = Math.cos(2 * Math.PI * cumulativePercent);
+                const y2 = Math.sin(2 * Math.PI * cumulativePercent);
+                const largeArcFlag = slicePercent > 0.5 ? 1 : 0;
+                const pathData = slicePercent === 1 ? `M 1 0 A 1 1 0 1 1 -1 0 A 1 1 0 1 1 1 0` : `M 0 0 L ${x1} ${y1} A 1 1 0 ${largeArcFlag} 1 ${x2} ${y2} Z`;
+                return <path key={i} d={pathData} fill={colors[i % colors.length]} stroke="white" strokeWidth="0.05" />;
+            });
+            return (
+                <div className="flex items-center justify-between gap-4">
+                    <div className="w-32 h-32 flex-shrink-0"><svg viewBox="-1.1 -1.1 2.2 2.2" className="transform -rotate-90 w-full h-full drop-shadow-sm">{slices}</svg></div>
+                    <div className="flex-1 space-y-1">
+                        {data.slice(0, 4).map((item, i) => (
+                            <div key={i} className="flex items-center gap-2 text-xs text-slate-600">
+                                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: colors[i % colors.length] }}></span>
+                                <span className="truncate flex-1">{item.label}</span>
+                                <span className="font-bold">{Math.round((item.value / total) * 100)}%</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const ProgressBar = ({ current, total, colorClass = "bg-indigo-600" }) => {
+            const percentage = Math.min(100, Math.max(0, (current / total) * 100));
+            return <div className="w-full bg-slate-100 rounded-full h-2 mt-2 overflow-hidden"><div className={`h-2 rounded-full transition-all duration-1000 ${colorClass}`} style={{ width: `${percentage}%` }}></div></div>;
+        };
+
+        // --- APP PRINCIPAL ---
+        const App = () => {
+            const [view, setView] = useState('dashboard'); 
+            const [transactionTab, setTransactionTab] = useState('history');
+            const [loadingState, setLoadingState] = useState('idle'); 
+            const [privacyMode, setPrivacyMode] = useState(false); // Novo: Modo Privacidade
+            const [toast, setToast] = useState(null); // Novo: Feedback Visual
+
+            // Estados de Dados
+            const [transactions, setTransactions] = useState([]);
+            const [investments, setInvestments] = useState([]);
+            const [vouchers, setVouchers] = useState([]);
+            const [goals, setGoals] = useState([]); // NOVO: Estado para Metas
+            // Init
+            useEffect(() => {
+                const init = async () => {
+                    setLoadingState('loading');
+                    if (GOOGLE_SCRIPT_URL) {    
+                        const cloudData = await apiService.loadData();
+                        if (cloudData) {
+                            setTransactions(cloudData.transactions || []);
+                            setInvestments(cloudData.investments || []);
+                            setVouchers(cloudData.vouchers || []);
+                            setGoals(cloudData.goals || []);
+                        }
+                    }
+                    setLoadingState('idle');
+                };
+                init();
+            }, []);
+
+            // Função Central de Atualização com Toast
+            const updateData = (type, newData) => {
+                if (type === 'transactions') setTransactions(newData);
+                if (type === 'investments') setInvestments(newData);
+                if (type === 'vouchers') setVouchers(newData);
+                if (type === 'goals') setGoals(newData);
+
+                setLoadingState('saving');
+                apiService.saveData(type, newData).then(() => {
+                    setTimeout(() => setLoadingState('idle'), 500);
+                    showToast("Alterações salvas na nuvem!", "success");
+                });
+            };
+
+            const showToast = (msg, type = 'success') => {
+                setToast({ message: msg, type });
+                setTimeout(() => setToast(null), 3000);
+            };
+
+            const [editingId, setEditingId] = useState(null);
+            const [formData, setFormData] = useState({ description: '', amount: '', type: 'expense', category: 'Geral' });
+            const [investFormData, setInvestFormData] = useState({ name: '', amount: '', type: 'Renda Fixa' });
+            const [voucherFormData, setVoucherFormData] = useState({ name: '', total: '', used: 0 });
+            // NOVO: Form e Estado para Metas
+            const [goalFormData, setGoalFormData] = useState({ name: '', current: '', target: '' });
+            const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
+            const [editingGoalId, setEditingGoalId] = useState(null);
+            const [usageAmount, setUsageAmount] = useState('');
+            const [activeVoucherId, setActiveVoucherId] = useState(null);
+            const [aiAnalysis, setAiAnalysis] = useState('');
+            const [isAiLoading, setIsAiLoading] = useState(false);
+            const [aiError, setAiError] = useState('');
+
+            // Cálculos
+            const financials = useMemo(() => {
+                const income = transactions.filter(t => t.type === 'income').reduce((acc, t) => acc + Number(t.amount), 0);
+                const expense = transactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + Number(t.amount), 0);
+                const invested = investments.reduce((acc, i) => acc + Number(i.amount), 0);
+                const balance = income - expense;
+                return { income, expense, invested, balance };
+            }, [transactions, investments]);
+
+            const expenseByCategory = useMemo(() => {
+                const expenses = transactions.filter(t => t.type === 'expense');
+                const grouped = {};
+                expenses.forEach(t => { grouped[t.category] = (grouped[t.category] || 0) + Number(t.amount); });
+                return Object.keys(grouped).map(key => ({ label: key, value: grouped[key] }));
+            }, [transactions]);
+
+            const investmentByType = useMemo(() => {
+                const grouped = {};
+                investments.forEach(i => { grouped[i.type] = (grouped[i.type] || 0) + Number(i.amount); });
+                return Object.keys(grouped).map(key => ({ label: key, value: grouped[key] }));
+            }, [investments]);
+
+            const vouchersChartData = useMemo(() => vouchers.map(v => ({ label: v.name, value: Number(v.used) })), [vouchers]);
+
+            // Handlers (Simplificados para brevidade, lógica igual)
+            const handleSaveTransaction = (e) => {
+                e.preventDefault(); if (!formData.description || !formData.amount) return;
+                const payload = { ...formData, id: editingId || Date.now(), amount: Number(formData.amount) };
+                updateData('transactions', editingId ? transactions.map(t => t.id === editingId ? payload : t) : [...transactions, payload]);
+                setEditingId(null); setFormData({ description: '', amount: '', type: 'expense', category: 'Geral' });
+            };
+            const handleDeleteTransaction = (id) => updateData('transactions', transactions.filter(t => t.id !== id));
+            const handleEditTransaction = (item) => { setEditingId(item.id); setFormData(item); setView('transactions'); setTransactionTab('history'); };
+
+            const handleSaveInvestment = (e) => {
+                e.preventDefault(); if (!investFormData.name || !investFormData.amount) return;
+                const payload = { ...investFormData, id: editingId || Date.now(), amount: Number(investFormData.amount) };
+                updateData('investments', editingId ? investments.map(i => i.id === editingId ? payload : i) : [...investments, payload]);
+                setEditingId(null); setInvestFormData({ name: '', amount: '', type: 'Renda Fixa' });
+            };
+            const handleDeleteInvestment = (id) => updateData('investments', investments.filter(i => i.id !== id));
+            const handleEditInvestment = (item) => { setEditingId(item.id); setInvestFormData(item); setView('investments'); };
+
+            const handleSaveVoucher = (e) => {
+                e.preventDefault(); if (!voucherFormData.name || !voucherFormData.total) return;
+                const payload = { ...voucherFormData, id: editingId || Date.now(), total: Number(voucherFormData.total), used: Number(voucherFormData.used) || 0 };
+                updateData('vouchers', editingId ? vouchers.map(v => v.id === editingId ? payload : v) : [...vouchers, payload]);
+                setEditingId(null); setVoucherFormData({ name: '', total: '', used: 0 });
+            };
+            const handleDeleteVoucher = (id) => updateData('vouchers', vouchers.filter(v => v.id !== id));
+            const handleEditVoucher = (item) => { setEditingId(item.id); setVoucherFormData(item); };
+            const handleUseVoucher = (e) => {
+                e.preventDefault(); if (!activeVoucherId || !usageAmount) return;
+                updateData('vouchers', vouchers.map(v => v.id === activeVoucherId ? { ...v, used: Number(v.used) + Number(usageAmount) } : v));
+                setActiveVoucherId(null); setUsageAmount('');
+            };
+
+            // --- NOVO: Handlers de Metas ---
+            const handleSaveGoal = (e) => {
+                e.preventDefault();
+                if (!goalFormData.name || !goalFormData.target) return;
+                const payload = { 
+                    id: editingGoalId || Date.now(),
+                    name: goalFormData.name,
+                    current: Number(goalFormData.current) || 0,
+                    target: Number(goalFormData.target)
+                };
+                updateData('goals', editingGoalId ? goals.map(g => g.id === editingGoalId ? payload : g) : [...goals, payload]);
+                setIsGoalModalOpen(false);
+                setEditingGoalId(null);
+                setGoalFormData({ name: '', current: '', target: '' });
+            };
+            const handleDeleteGoal = (id) => updateData('goals', goals.filter(g => g.id !== id));
+            const handleEditGoal = (item) => { setEditingGoalId(item.id); setGoalFormData(item); setIsGoalModalOpen(true); };
+
+            const generateAiReport = async () => {
+                if (!apiKey) { setAiError("Sem API Key."); return; }
+                setIsAiLoading(true); setAiError(''); setAiAnalysis('');
+                try {
+                    const dataSummary = JSON.stringify({ resumo: financials, transacoes_recentes: transactions.slice(-10), investimentos: investments, vales: vouchers });
+                    const prompt = `Aja como um consultor financeiro de elite. Analise JSON: ${dataSummary}. Relatório Markdown: 1.Diagnóstico 2.Gastos 3.Investimentos 4.Vales 5.Dica. Use formatação rica.`;
+                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) });
+                    const data = await res.json();
+                    if (data.error) throw new Error(data.error.message);
+                    setAiAnalysis(data.candidates?.[0]?.content?.parts?.[0]?.text || "Erro.");
+                } catch (error) { setAiError("Erro IA: " + error.message); } finally { setIsAiLoading(false); }
+            };
+
+            const formatCurrency = (val) => {
+                if (privacyMode) return "••••";
+                return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+            };
+
+            if (loadingState === 'loading') return <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 gap-4"><div className="loader ease-linear rounded-full border-4 border-t-4 border-indigo-600 h-12 w-12"></div><p className="text-slate-500 font-medium animate-pulse">Sincronizando FinAI Cloud...</p></div>;
+
+            return (
+                <div className="min-h-screen flex flex-col md:flex-row overflow-hidden">
+                    {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+                    
+                    {/* Status Nuvem */}
+                    <div className="fixed bottom-24 right-4 md:bottom-4 md:right-4 z-50 flex gap-2 items-center opacity-60 hover:opacity-100 transition-opacity cursor-default">
+                    {loadingState === 'saving' ? <div className="bg-indigo-600 text-white px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-2 shadow-lg animate-pulse"><CloudLightning size={14}/> Salvando</div> : GOOGLE_SCRIPT_URL ? <div className="bg-slate-800 text-white border border-slate-700 px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-2 shadow-lg"><Cloud size={14}/> Online</div> : <div className="bg-red-100 text-red-700 px-3 py-1.5 rounded-full text-xs font-bold">Offline</div>}
+                    </div>
+
+                    {/* Sidebar Pro */}
+                    <nav className="bg-slate-900 text-slate-300 md:w-72 md:h-screen flex md:flex-col justify-between fixed md:relative bottom-0 w-full z-40 shadow-2xl md:shadow-none">
+                        <div className="p-8 hidden md:block">
+                            <h1 className="text-3xl font-bold flex items-center gap-2 text-white"><BrainCircuit className="text-indigo-500" /> FinAI <span className="text-xs bg-indigo-600 text-white px-2 py-0.5 rounded-full ml-1">PRO</span></h1>
+                            <p className="text-xs text-slate-500 mt-2 font-medium tracking-wide">FINANCIAL INTELLIGENCE</p>
+                        </div>
+                        
+                        <div className="flex md:flex-col w-full overflow-x-auto md:overflow-visible px-2 md:px-4 gap-1 md:gap-2 py-2 md:py-0">
+                            {[
+                                { id: 'dashboard', icon: Home, label: 'Visão Geral' },
+                                { id: 'transactions', icon: DollarSign, label: 'Transações' },
+                                { id: 'investments', icon: Target, label: 'Carteira' },
+                                { id: 'ai', icon: BrainCircuit, label: 'Consultor IA' }
+                            ].map(item => (
+                                <button key={item.id} onClick={() => setView(item.id)} className={`flex-1 md:flex-none p-4 rounded-xl flex items-center gap-3 transition-all duration-200 ${view === item.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20 transform scale-105' : 'hover:bg-slate-800 hover:text-white'}`}>
+                                    <item.icon size={20} /> <span className="hidden md:inline font-medium">{item.label}</span>
+                                </button>
+                            ))}
+                        </div>
+                        
+                        <div className="hidden md:block p-6 text-xs text-slate-600 text-center border-t border-slate-800">
+                            v4.0.0 • Google Cloud Sync
+                        </div>
+                    </nav>
+
+                    <main className="flex-1 p-4 md:p-8 pb-28 md:pb-8 overflow-y-auto bg-gradient-to-br from-slate-50 to-slate-100">
+                        
+                        {/* Header Mobile e Ferramentas */}
+                        <div className="flex justify-between items-center mb-8">
+                            <div className="md:hidden">
+                                <h1 className="text-xl font-bold text-slate-900 flex items-center gap-2"><BrainCircuit className="text-indigo-600"/> FinAI 4.0</h1>
+                            </div>
+                            <div className="flex items-center gap-4 ml-auto">
+                                <button onClick={() => setPrivacyMode(!privacyMode)} className="p-2 rounded-full hover:bg-slate-200 text-slate-500 transition-colors" title={privacyMode ? "Mostrar valores" : "Esconder valores"}>
+                                    {privacyMode ? <EyeOff size={20}/> : <Eye size={20}/>}
+                                </button>
+                                <div className="hidden md:block bg-indigo-50 text-indigo-800 px-4 py-2 rounded-xl text-sm font-bold shadow-sm border border-indigo-100">
+                                    Saldo Total: {formatCurrency(financials.balance)}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="animate-slide-up">
+                            {view === 'dashboard' && (
+                                <div className="space-y-6">
+                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                                        <Card className="border-l-4 border-l-emerald-500">
+                                            <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-1">Receita Mensal</p>
+                                            <p className="text-2xl font-bold text-slate-800">{formatCurrency(financials.income)}</p>
+                                        </Card>
+                                        <Card className="border-l-4 border-l-red-500">
+                                            <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-1">Despesas</p>
+                                            <p className="text-2xl font-bold text-slate-800">{formatCurrency(financials.expense)}</p>
+                                        </Card>
+                                        <Card className="border-l-4 border-l-blue-500">
+                                            <p className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-1">Investimentos</p>
+                                            <p className="text-2xl font-bold text-slate-800">{formatCurrency(financials.invested)}</p>
+                                        </Card>
+                                        <div className="bg-gradient-to-br from-slate-800 to-slate-900 text-white rounded-2xl p-5 shadow-lg flex flex-col justify-center">
+                                            <p className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-1">Saldo Livre</p>
+                                            <p className="text-2xl font-bold">{formatCurrency(financials.balance)}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid md:grid-cols-2 gap-6">
+                                        <Card>
+                                            <h3 className="font-bold text-slate-700 mb-6">Análise de Gastos</h3>
+                                            <SimplePieChart data={expenseByCategory} colors={['#F87171', '#FCA5A5', '#FECACA', '#fee2e2', '#ef4444']} />
+                                        </Card>
+                                        <Card>
+                                            <h3 className="font-bold text-slate-700 mb-6">Distribuição da Carteira</h3>
+                                            <SimplePieChart data={investmentByType} colors={['#60A5FA', '#93C5FD', '#BFDBFE', '#dbeafe', '#3b82f6']} />
+                                        </Card>
+                                    </div>
+                                    
+                                    {/* Widget de Metas (Exemplo Visual) */}
+                                    <Card>
+                                        <div className="flex justify-between items-center mb-4">
+                                            <h3 className="font-bold text-slate-700 flex items-center gap-2"><Flag size={18} className="text-indigo-500"/> Minhas Metas</h3>
+                                            <button onClick={() => { setEditingGoalId(null); setGoalFormData({name:'', current:'', target:''}); setIsGoalModalOpen(true); }} className="text-xs bg-indigo-100 text-indigo-700 px-3 py-1 rounded-lg font-bold hover:bg-indigo-200 flex items-center gap-1"><Plus size={14}/> Nova Meta</button>
+                                        </div>
+                                        {goals.length === 0 ? <p className="text-slate-400 text-sm italic text-center py-4">Nenhuma meta definida.</p> : 
+                                        <div className="space-y-4">
+                                            {goals.map(g => {
+                                                const pct = Math.min(100, Math.round((g.current / g.target) * 100)) || 0;
+                                                return (
+                                                    <div key={g.id} className="group">
+                                                        <div className="flex justify-between text-sm mb-1 items-center">
+                                                            <span className="font-medium text-slate-700 flex items-center gap-2">
+                                                                {g.name}
+                                                                <button onClick={() => handleEditGoal(g)} className="text-slate-300 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"><Edit2 size={12}/></button>
+                                                                <button onClick={() => handleDeleteGoal(g.id)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={12}/></button>
+                                                            </span>
+                                                            <span className="font-bold text-indigo-600">{formatCurrency(g.current)} / {formatCurrency(g.target)} ({pct}%)</span>
+                                                        </div>
+                                                        <div className="w-full bg-slate-100 rounded-full h-2"><div className="bg-indigo-500 h-2 rounded-full transition-all duration-1000" style={{width: `${pct}%`}}></div></div>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>}
+                                    </Card>
+                                </div>
+                            )}
+
+
+                            {isGoalModalOpen && (
+                                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[70] p-4 animate-fade-in">
+                                    <div className="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-sm">
+                                        <h3 className="font-bold text-lg mb-4 text-slate-800">{editingGoalId ? 'Editar Meta' : 'Nova Meta'}</h3>
+                                        <form onSubmit={handleSaveGoal} className="space-y-3">
+                                            <input type="text" placeholder="Nome (ex: Carro Novo)" className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500" value={goalFormData.name} onChange={e => setGoalFormData({...goalFormData, name: e.target.value})} autoFocus/>
+                                            <input type="number" placeholder="Já guardado (R$)" className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500" value={goalFormData.current} onChange={e => setGoalFormData({...goalFormData, current: e.target.value})}/>
+                                            <input type="number" placeholder="Meta Final (R$)" className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500" value={goalFormData.target} onChange={e => setGoalFormData({...goalFormData, target: e.target.value})}/>
+                                            <div className="flex gap-2 pt-2">
+                                                <button type="button" onClick={() => setIsGoalModalOpen(false)} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200">Cancelar</button>
+                                                <button type="submit" className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700">Salvar</button>
+                                            </div>
+                                        </form>
+                                    </div>
+                                </div>
+                            )}
+
+                            {view === 'transactions' && (
+                                <div className="space-y-6">
+                                    <div className="flex gap-2 border-b border-slate-200 pb-4 overflow-x-auto">
+                                        <button onClick={() => setTransactionTab('history')} className={`px-6 py-2 rounded-full font-bold text-sm transition-all whitespace-nowrap ${transactionTab === 'history' ? 'bg-indigo-600 text-white shadow-md' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}>Histórico Geral</button>
+                                        <button onClick={() => setTransactionTab('vouchers')} className={`px-6 py-2 rounded-full font-bold text-sm transition-all whitespace-nowrap flex items-center gap-2 ${transactionTab === 'vouchers' ? 'bg-orange-500 text-white shadow-md' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}><CreditCard size={14}/> Gestão de Vales</button>
+                                    </div>
+
+                                    {transactionTab === 'history' && (
+                                        <div className="grid lg:grid-cols-3 gap-6">
+                                            <div className="lg:col-span-1">
+                                                <Card className="sticky top-4 border-t-4 border-t-indigo-500">
+                                                    <h3 className="font-bold mb-6 text-lg text-slate-800">{editingId ? 'Editar Lançamento' : 'Novo Lançamento'}</h3>
+                                                    <form onSubmit={handleSaveTransaction} className="space-y-4">
+                                                        <div>
+                                                            <label className="text-xs font-bold text-slate-500 uppercase ml-1">Descrição</label>
+                                                            <input type="text" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})}/>
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-3">
+                                                            <div>
+                                                                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Valor</label>
+                                                                <input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" value={formData.amount} onChange={e => setFormData({...formData, amount: e.target.value})}/>
+                                                            </div>
+                                                            <div>
+                                                                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Categoria</label>
+                                                                <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none appearance-none" value={formData.category} onChange={e => setFormData({...formData, category: e.target.value})}>
+                                                                    <option>Geral</option><option>Moradia</option><option>Alimentação</option><option>Transporte</option><option>Lazer</option><option>Saúde</option><option>Trabalho</option><option>Dívida</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex bg-slate-100 p-1.5 rounded-xl">
+                                                            <button type="button" onClick={() => setFormData({...formData, type: 'income'})} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${formData.type === 'income' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>Entrada</button>
+                                                            <button type="button" onClick={() => setFormData({...formData, type: 'expense'})} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${formData.type === 'expense' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}>Saída</button>
+                                                        </div>
+                                                        <div className="flex gap-2 pt-2">
+                                                            {editingId && <button type="button" onClick={() => {setEditingId(null); setFormData({description: '', amount: '', type: 'expense', category: 'Geral'})}} className="px-4 bg-slate-100 text-slate-500 rounded-xl hover:bg-slate-200"><X size={20}/></button>}
+                                                            <button type="submit" className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition-all flex justify-center items-center gap-2">{editingId ? 'Atualizar' : 'Adicionar'}</button>
+                                                        </div>
+                                                    </form>
+                                                </Card>
+                                            </div>
+                                            <div className="lg:col-span-2 space-y-3">
+                                                {transactions.length === 0 && <div className="text-center py-12 text-slate-400 bg-white rounded-2xl border border-dashed border-slate-200">Nenhuma transação registrada.</div>}
+                                                {transactions.slice().reverse().map(t => (
+                                                    <div key={t.id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center group hover:border-indigo-200 transition-all hover:shadow-md">
+                                                        <div className="flex items-center gap-4">
+                                                            <div className={`p-3 rounded-xl ${t.type === 'income' ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
+                                                                {t.type === 'income' ? <TrendingUp size={20}/> : <TrendingDown size={20}/>}
+                                                            </div>
+                                                            <div>
+                                                                <p className="font-bold text-slate-800 text-sm md:text-base">{t.description}</p>
+                                                                <span className="text-xs font-medium px-2 py-0.5 bg-slate-100 text-slate-500 rounded-md">{t.category}</span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="text-right">
+                                                            <p className={`font-bold ${t.type === 'income' ? 'text-emerald-600' : 'text-red-600'}`}>{t.type === 'expense' && '- '}{formatCurrency(Number(t.amount))}</p>
+                                                            <div className="flex justify-end gap-2 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                <button onClick={() => handleEditTransaction(t)} className="text-slate-400 hover:text-indigo-500"><Edit2 size={16}/></button>
+                                                                <button onClick={() => handleDeleteTransaction(t.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={16}/></button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {transactionTab === 'vouchers' && (
+                                        <div className="grid lg:grid-cols-3 gap-6">
+                                            <div className="lg:col-span-1">
+                                                <Card className="sticky top-4 border-t-4 border-t-orange-500">
+                                                    <h3 className="font-bold mb-6 text-lg text-slate-800 flex items-center gap-2 text-orange-600"><CreditCard size={20}/> {editingId ? 'Editar Vale' : 'Novo Vale'}</h3>
+                                                    <form onSubmit={handleSaveVoucher} className="space-y-4">
+                                                        <div>
+                                                            <label className="text-xs font-bold text-slate-500 uppercase ml-1">Nome do Vale</label>
+                                                            <input type="text" placeholder="Ex: VR, VA" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none" value={voucherFormData.name} onChange={e => setVoucherFormData({...voucherFormData, name: e.target.value})}/>
+                                                        </div>
+                                                        <div>
+                                                            <label className="text-xs font-bold text-slate-500 uppercase ml-1">Valor Total</label>
+                                                            <input type="number" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none" value={voucherFormData.total} onChange={e => setVoucherFormData({...voucherFormData, total: e.target.value})}/>
+                                                        </div>
+                                                        <div className="flex gap-2 pt-2">
+                                                            {editingId && <button type="button" onClick={() => {setEditingId(null); setVoucherFormData({name: '', total: '', used: 0})}} className="px-4 bg-slate-100 text-slate-500 rounded-xl"><X size={20}/></button>}
+                                                            <button type="submit" className="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold hover:bg-orange-600 shadow-lg shadow-orange-200 transition-all">Salvar Vale</button>
+                                                        </div>
+                                                    </form>
+                                                </Card>
+                                            </div>
+                                            <div className="lg:col-span-2 space-y-6">
+                                                {vouchers.map(v => {
+                                                    const available = v.total - v.used;
+                                                    const percent = (v.used / v.total) * 100;
+                                                    return (
+                                                        <Card key={v.id} className="relative overflow-hidden">
+                                                            <div className="flex justify-between items-start mb-4">
+                                                                <div>
+                                                                    <h4 className="font-bold text-lg text-slate-700">{v.name}</h4>
+                                                                    <p className="text-xs text-slate-400">Limite: {formatCurrency(v.total)}</p>
+                                                                </div>
+                                                                <div className="flex gap-2">
+                                                                    <button onClick={() => setActiveVoucherId(v.id)} className="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-lg text-xs font-bold hover:bg-emerald-200 transition-colors">Usar</button>
+                                                                    <button onClick={() => handleEditVoucher(v)} className="text-slate-300 hover:text-indigo-500"><Edit2 size={18}/></button>
+                                                                    <button onClick={() => handleDeleteVoucher(v.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={18}/></button>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex justify-between items-end mb-2">
+                                                                <div>
+                                                                    <p className="text-sm text-slate-500">Disponível</p>
+                                                                    <p className="text-2xl font-bold text-emerald-600">{formatCurrency(available)}</p>
+                                                                </div>
+                                                                <div className="text-right">
+                                                                    <p className="text-xs text-slate-400">Gasto: {formatCurrency(v.used)}</p>
+                                                                </div>
+                                                            </div>
+                                                            <ProgressBar current={v.used} total={v.total} colorClass={percent > 90 ? 'bg-red-500' : percent > 60 ? 'bg-orange-400' : 'bg-emerald-500'} />
+                                                        </Card>
+                                                    )
+                                                })}
+                                                {vouchers.length > 0 && (
+                                                    <Card>
+                                                        <h3 className="font-bold text-slate-700 mb-6">Distribuição de Vales</h3>
+                                                        <SimplePieChart data={vouchersChartData} colors={['#F97316', '#FB923C', '#FDBA74', '#FFEDD5']} />
+                                                    </Card>
+                                                )}
+                                            </div>
+                                            {activeVoucherId && (
+                                                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+                                                    <div className="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-sm transform transition-all scale-100">
+                                                        <h3 className="font-bold text-lg mb-4 text-slate-800">Quanto você gastou?</h3>
+                                                        <input type="number" autoFocus placeholder="R$ 0,00" className="w-full p-4 text-xl font-bold text-center bg-slate-50 border border-slate-200 rounded-xl mb-6 focus:ring-2 focus:ring-emerald-500 outline-none text-slate-700" value={usageAmount} onChange={e => setUsageAmount(e.target.value)}/>
+                                                        <div className="flex gap-3">
+                                                            <button onClick={() => {setActiveVoucherId(null); setUsageAmount('')}} className="flex-1 py-3 bg-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-200">Cancelar</button>
+                                                            <button onClick={handleUseVoucher} className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-200">Confirmar</button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {view === 'investments' && (
+                                <div className="grid lg:grid-cols-3 gap-6">
+                                    <div className="lg:col-span-1">
+                                        <Card className="sticky top-4 border-t-4 border-t-blue-500">
+                                            <h3 className="font-bold mb-6 flex items-center gap-2 text-lg"><Target className="text-blue-500"/> Gerenciar Ativo</h3>
+                                            <form onSubmit={handleSaveInvestment} className="space-y-4">
+                                                <input type="text" placeholder="Nome do Ativo" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={investFormData.name} onChange={e => setInvestFormData({...investFormData, name: e.target.value})}/>
+                                                <input type="number" placeholder="Valor Investido" className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={investFormData.amount} onChange={e => setInvestFormData({...investFormData, amount: e.target.value})}/>
+                                                <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" value={investFormData.type} onChange={e => setInvestFormData({...investFormData, type: e.target.value})}>
+                                                    <option>Renda Fixa</option><option>Renda Variável</option><option>Fundos Imobiliários</option><option>Cripto</option><option>Reserva de Emergência</option>
+                                                </select>
+                                                <div className="flex gap-2 pt-2">
+                                                    {editingId && <button type="button" onClick={() => {setEditingId(null); setInvestFormData({name: '', amount: '', type: 'Renda Fixa'})}} className="px-4 bg-slate-100 rounded-xl"><X size={20}/></button>}
+                                                    <button type="submit" className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-200">Salvar Ativo</button>
+                                                </div>
+                                            </form>
+                                        </Card>
+                                    </div>
+                                    <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        {investments.map(inv => (
+                                            <Card key={inv.id} className="relative group hover:-translate-y-1 transition-transform duration-300">
+                                                <div className="flex justify-between items-start mb-3">
+                                                    <span className="bg-blue-50 text-blue-700 text-xs font-bold px-2 py-1 rounded-md uppercase tracking-wider">{inv.type}</span>
+                                                    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                        <button onClick={() => handleEditInvestment(inv)} className="text-slate-300 hover:text-blue-500"><Edit2 size={16}/></button>
+                                                        <button onClick={() => handleDeleteInvestment(inv.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>
+                                                    </div>
+                                                </div>
+                                                <h4 className="font-bold text-lg text-slate-800 mb-1">{inv.name}</h4>
+                                                <p className="text-2xl font-bold text-blue-600">{formatCurrency(Number(inv.amount))}</p>
+                                            </Card>
+                                        ))}
+                                        {investments.length === 0 && <div className="col-span-full text-center py-12 text-slate-400 border-2 border-dashed border-slate-200 rounded-2xl">Sua carteira está vazia. Comece a investir!</div>}
+                                    </div>
+                                </div>
+                            )}
+
+                            {view === 'ai' && (
+                                <div className="max-w-3xl mx-auto">
+                                    <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-2xl shadow-xl p-8 text-white text-center mb-8 relative overflow-hidden">
+                                        <div className="absolute top-0 left-0 w-full h-full opacity-10 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]"></div>
+                                        <BrainCircuit className="w-16 h-16 mx-auto mb-4 text-white/80" />
+                                        <h2 className="text-3xl font-bold relative z-10">Consultor Financeiro IA</h2>
+                                        <p className="text-indigo-100 mt-2 relative z-10">Inteligência artificial analisando seus padrões para otimizar sua riqueza.</p>
+                                    </div>
+                                    
+                                    <Card className="min-h-[400px]">
+                                        {!aiAnalysis && !isAiLoading && (
+                                            <div className="text-center py-12 space-y-6">
+                                                <p className="text-slate-600 max-w-md mx-auto">
+                                                    Vou analisar seus <strong>{transactions.length} lançamentos</strong>, carteira de investimentos e uso de vales para gerar um plano de ação personalizado.
+                                                </p>
+                                                <button onClick={generateAiReport} className="bg-slate-900 hover:bg-slate-800 text-white font-bold py-4 px-10 rounded-full shadow-xl transform hover:scale-105 transition-all flex items-center gap-3 mx-auto">
+                                                    <BrainCircuit size={20}/> Gerar Relatório Completo
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        {isAiLoading && (
+                                            <div className="text-center py-20 space-y-6">
+                                                <div className="relative w-20 h-20 mx-auto">
+                                                    <div className="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
+                                                    <div className="absolute inset-0 border-4 border-indigo-600 rounded-full border-t-transparent animate-spin"></div>
+                                                </div>
+                                                <p className="text-slate-500 font-medium animate-pulse">Processando dados financeiros...</p>
+                                            </div>
+                                        )}
+
+                                        {aiError && (
+                                            <div className="bg-red-50 text-red-700 p-6 rounded-xl text-center border border-red-100">
+                                                <p className="font-bold mb-2">Ops, algo deu errado.</p>
+                                                <p className="text-sm mb-4">{aiError}</p>
+                                                <button onClick={generateAiReport} className="text-sm underline font-bold hover:text-red-800">Tentar Novamente</button>
+                                            </div>
+                                        )}
+
+                                        {aiAnalysis && (
+                                            <div className="animate-slide-up">
+                                                <div className="prose prose-slate max-w-none mb-8">
+                                                    <div className="whitespace-pre-line text-slate-700 leading-relaxed bg-slate-50 p-6 rounded-xl border border-slate-100 font-medium text-sm md:text-base">
+                                                        {aiAnalysis}
+                                                    </div>
+                                                </div>
+                                                <button onClick={generateAiReport} className="w-full border-2 border-indigo-100 text-indigo-600 font-bold py-3 rounded-xl hover:bg-indigo-50 transition-colors">
+                                                    Atualizar Análise
+                                                </button>
+                                            </div>
+                                        )}
+                                    </Card>
+                                </div>
+                            )}
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+
+    </script>
+</body>
+</html>
