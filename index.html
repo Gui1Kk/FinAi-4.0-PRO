@@ -35,33 +35,33 @@
         import { 
             Plus, Trash2, Edit2, TrendingUp, TrendingDown, DollarSign, 
             PieChart, BrainCircuit, Save, X, Target, Briefcase,
-            CreditCard, MinusCircle, Cloud, CloudLightning, Eye, EyeOff, CheckCircle, AlertCircle, Home, Flag
+            CreditCard, MinusCircle, Cloud, CloudLightning, Eye, EyeOff, CheckCircle, AlertCircle, Home, Flag, LogOut, User
         } from 'lucide-react';
 
         // --- CONFIGURAÇÕES (Preencha aqui!) ---
-        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyL2MG2nRkjKsTKJngE5suUbFpyWkPTXJ9rPa1qDfYbhxJk1X-9LQk5WfJCB6P6SNjmfA/exec"; 
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzrbUW76XeR_uAiqZcFXI24gL0rK7LAxr0odPpyRYedS6-OzoFM_deKHdgOMOPSdjaQqQ/exec"; 
         const apiKey = "AIzaSyAtAV8-K3G_ZyYrJOXRJtef_qR1jrL22XM"; 
 
         // --- SERVIÇO DE API ---
         const apiService = {
-            async loadData() {
-                if (!GOOGLE_SCRIPT_URL) return null;
+            async request(payload) {
+                if (!GOOGLE_SCRIPT_URL) return { status: 'error', message: 'URL não configurada' };
                 try {
-                    const response = await fetch(GOOGLE_SCRIPT_URL);
+                    const response = await fetch(GOOGLE_SCRIPT_URL, {
+                        method: 'POST',
+                        body: JSON.stringify(payload),
+                        headers: { "Content-Type": "text/plain;charset=utf-8" }
+                    });
                     return await response.json();
                 } catch (error) {
-                    console.error("Erro ao carregar:", error);
-                    return null;
+                    console.error("Erro API:", error);
+                    return { status: 'error', message: 'Erro de conexão' };
                 }
             },
-            async saveData(type, data) {
-                if (!GOOGLE_SCRIPT_URL) return;
-                await fetch(GOOGLE_SCRIPT_URL, {
-                    method: 'POST',
-                    body: JSON.stringify({ type, data }),
-                    headers: { "Content-Type": "text/plain;charset=utf-8" } 
-                });
-            }
+            login(username, password) { return this.request({ action: 'login', username, password }); },
+            register(username, password) { return this.request({ action: 'register', username, password }); },
+            loadData(username) { return this.request({ action: 'load', username }); },
+            saveData(type, data, username) { return this.request({ action: 'save', type, data, username }); }
         };
 
         // --- COMPONENTES UI MODERNOS ---
@@ -116,8 +116,70 @@
             return <div className="w-full bg-slate-100 rounded-full h-2 mt-2 overflow-hidden"><div className={`h-2 rounded-full transition-all duration-1000 ${colorClass}`} style={{ width: `${percentage}%` }}></div></div>;
         };
 
+        const AuthScreen = ({ onLogin }) => {
+            const [isRegister, setIsRegister] = useState(false);
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState('');
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setLoading(true); setError('');
+                
+                const res = isRegister 
+                    ? await apiService.register(username, password)
+                    : await apiService.login(username, password);
+
+                setLoading(false);
+                
+                if (res.status === 'success') {
+                    onLogin(res.user);
+                } else {
+                    setError(res.message || 'Erro ao conectar');
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-indigo-900 p-4">
+                    <div className="bg-white w-full max-w-md rounded-2xl shadow-2xl p-8 animate-fade-in">
+                        <div className="text-center mb-8">
+                            <div className="bg-indigo-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <BrainCircuit size={32} className="text-indigo-600"/>
+                            </div>
+                            <h1 className="text-2xl font-bold text-slate-800">Bem-vindo ao FinAI</h1>
+                            <p className="text-slate-500 text-sm">Seu assistente financeiro pessoal</p>
+                        </div>
+
+                        <form onSubmit={handleSubmit} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Usuário</label>
+                                <input type="text" required className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500" value={username} onChange={e => setUsername(e.target.value)} />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Senha</label>
+                                <input type="password" required className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500" value={password} onChange={e => setPassword(e.target.value)} />
+                            </div>
+                            
+                            {error && <div className="text-red-500 text-sm text-center bg-red-50 p-2 rounded-lg">{error}</div>}
+
+                            <button type="submit" disabled={loading} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all flex justify-center items-center disabled:opacity-50">
+                                {loading ? <div className="loader w-5 h-5 border-2 border-white rounded-full"></div> : (isRegister ? 'Criar Conta' : 'Entrar')}
+                            </button>
+                        </form>
+
+                        <div className="mt-6 text-center text-sm">
+                            <button onClick={() => setIsRegister(!isRegister)} className="text-indigo-600 hover:underline font-medium">
+                                {isRegister ? 'Já tem uma conta? Entre aqui.' : 'Não tem conta? Cadastre-se.'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
         // --- APP PRINCIPAL ---
-        const App = () => {
+        const Dashboard = ({ user, onLogout }) => {
             const [view, setView] = useState('dashboard'); 
             const [transactionTab, setTransactionTab] = useState('history');
             const [loadingState, setLoadingState] = useState('idle'); 
@@ -131,21 +193,21 @@
             const [goals, setGoals] = useState([]); // NOVO: Estado para Metas
             // Init
             useEffect(() => {
-                const init = async () => {
-                    setLoadingState('loading');
-                    if (GOOGLE_SCRIPT_URL) {    
-                        const cloudData = await apiService.loadData();
-                        if (cloudData) {
-                            setTransactions(cloudData.transactions || []);
-                            setInvestments(cloudData.investments || []);
-                            setVouchers(cloudData.vouchers || []);
-                            setGoals(cloudData.goals || []);
-                        }
-                    }
-                    setLoadingState('idle');
-                };
-                init();
-            }, []);
+            const loadData = async () => {
+                setLoadingState('loading');
+                // AGORA PASSA O USUÁRIO
+                const res = await apiService.loadData(user.username); 
+                if (res.status === 'success') {
+                    const data = res.data;
+                    setTransactions(data.transactions || []);
+                    setInvestments(data.investments || []);
+                    setVouchers(data.vouchers || []);
+                    setGoals(data.goals || []);
+                }
+                setLoadingState('idle');
+            };
+            loadData();
+        }, [user]);
 
             // Função Central de Atualização com Toast
             const updateData = (type, newData) => {
@@ -155,7 +217,7 @@
                 if (type === 'goals') setGoals(newData);
 
                 setLoadingState('saving');
-                apiService.saveData(type, newData).then(() => {
+                apiService.saveData(type, newData, user.username).then(() => {
                     setTimeout(() => setLoadingState('idle'), 500);
                     showToast("Alterações salvas na nuvem!", "success");
                 });
@@ -286,6 +348,20 @@
 
                     {/* Sidebar Pro */}
                     <nav className="bg-slate-900 text-slate-300 md:w-72 md:h-screen flex md:flex-col justify-between fixed md:relative bottom-0 w-full z-40 shadow-2xl md:shadow-none">
+                        
+                        <div className="p-6 bg-slate-800 flex items-center justify-between border-b border-slate-700">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-indigo-500 w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shadow-lg">
+                                    {user.username.charAt(0).toUpperCase()}
+                                </div>
+                                <div>
+                                    <p className="text-white font-bold text-sm">{user.username}</p>
+                                    <p className="text-slate-400 text-xs">Conta Pessoal</p>
+                                </div>
+                            </div>
+                            <button onClick={onLogout} className="text-slate-400 hover:text-red-400 transition-colors" title="Sair"><LogOut size={20}/></button>
+                        </div>
+                        
                         <div className="p-8 hidden md:block">
                             <h1 className="text-3xl font-bold flex items-center gap-2 text-white"><BrainCircuit className="text-indigo-500" /> FinAI <span className="text-xs bg-indigo-600 text-white px-2 py-0.5 rounded-full ml-1">PRO</span></h1>
                             <p className="text-xs text-slate-500 mt-2 font-medium tracking-wide">FINANCIAL INTELLIGENCE</p>
@@ -642,6 +718,18 @@
                     </main>
                 </div>
             );
+        };
+
+        const App = () => {
+            const [user, setUser] = useState(null); 
+            
+            // Se não tiver usuário, mostra Login
+            if (!user) {
+                return <AuthScreen onLogin={setUser} />;
+            }
+
+            // Se tiver, mostra o Dashboard
+            return <Dashboard user={user} onLogout={() => setUser(null)} />;
         };
 
         const root = createRoot(document.getElementById('root'));
