@@ -1,10 +1,19 @@
 import type { ApiResult, FinanceData, User } from "../types";
-import { emptyFinanceData } from "../utils";
+import { emptyFinanceData, normalizeFinanceData } from "../utils";
 
 const scriptUrl = import.meta.env.VITE_GOOGLE_SCRIPT_URL?.trim() || "";
 
-const localDataKey = (username: string) => `finai:data:${username}`;
-const localUsersKey = "finai:users";
+const localDataKey = (username: string) => `nummi:data:${username}`;
+const legacyDataKey = (username: string) => `finai:data:${username}`;
+const localUsersKey = "nummi:users";
+const legacyUsersKey = "finai:users";
+const localAuthUsersKey = "nummi:authUsers";
+const sessionTokenKey = (username: string) => `nummi:token:${username}`;
+
+interface LocalAuthUser extends User {
+  passwordHash: string;
+  salt: string;
+}
 
 const readJson = <T>(key: string, fallback: T): T => {
   try {
@@ -17,6 +26,23 @@ const readJson = <T>(key: string, fallback: T): T => {
 
 const writeJson = (key: string, value: unknown) => {
   localStorage.setItem(key, JSON.stringify(value));
+};
+
+const makeLocalToken = () => {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const hashText = async (value: string) => {
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    const bytes = new TextEncoder().encode(value);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  return btoa(unescape(encodeURIComponent(value)));
 };
 
 const requestRemote = async <T>(payload: Record<string, unknown>): Promise<ApiResult<T>> => {
@@ -42,17 +68,37 @@ const requestRemote = async <T>(payload: Record<string, unknown>): Promise<ApiRe
   }
 };
 
-const normalizeFinanceData = (data?: Partial<FinanceData>): FinanceData => ({
-  transactions: Array.isArray(data?.transactions) ? data.transactions : [],
-  investments: Array.isArray(data?.investments) ? data.investments : [],
-  vouchers: Array.isArray(data?.vouchers) ? data.vouchers : [],
-  goals: Array.isArray(data?.goals) ? data.goals : []
-});
+const loadLocalData = (username: string) => {
+  const next = readJson<FinanceData | null>(localDataKey(username), null);
+  if (next) return normalizeFinanceData(next);
 
-const loadLocalData = (username: string) => readJson(localDataKey(username), emptyFinanceData());
+  const legacy = readJson<Partial<FinanceData> | null>(legacyDataKey(username), null);
+  if (legacy) {
+    const migrated = normalizeFinanceData(legacy);
+    writeJson(localDataKey(username), migrated);
+    return migrated;
+  }
+
+  return emptyFinanceData();
+};
 
 const saveLocalData = (username: string, data: FinanceData) => {
-  writeJson(localDataKey(username), data);
+  writeJson(localDataKey(username), normalizeFinanceData(data));
+};
+
+const loadLocalUsers = () => ({
+  ...readJson<Record<string, User>>(legacyUsersKey, {}),
+  ...readJson<Record<string, User>>(localUsersKey, {})
+});
+
+const loadLocalAuthUsers = () => readJson<Record<string, LocalAuthUser>>(localAuthUsersKey, {});
+
+const findLocalAuthUser = (identifier: string) => {
+  const users = loadLocalAuthUsers();
+  const normalized = identifier.toLowerCase();
+  return Object.values(users).find(
+    (user) => user.username.toLowerCase() === normalized || user.email?.toLowerCase() === normalized
+  );
 };
 
 export const hasRemoteBackend = Boolean(scriptUrl);
@@ -67,15 +113,23 @@ export const apiService = {
       try {
         const remote = await requestRemote({ action: "login", username: identifier, password });
         if (remote.status === "success") return remote;
+        return remote;
       } catch {
-        // Fallback below keeps the app usable while the Apps Script is being redeployed.
+        // Local fallback keeps the app usable while the Apps Script is being configured.
       }
     }
 
-    const users = readJson<Record<string, User>>(localUsersKey, {});
-    const user = users[identifier] || { username: identifier };
-    users[identifier] = user;
-    writeJson(localUsersKey, users);
+    const authUser = findLocalAuthUser(identifier);
+    if (!authUser) {
+      return { status: "error", message: "Usuario local nao encontrado. Crie uma conta local primeiro.", source: "local" };
+    }
+
+    const passwordHash = await hashText(`${authUser.salt}:${password}`);
+    if (passwordHash !== authUser.passwordHash) {
+      return { status: "error", message: "Senha local invalida.", source: "local" };
+    }
+
+    const user = { username: authUser.username, email: authUser.email, userId: authUser.userId, token: makeLocalToken() };
     return { status: "success", user, source: "local" };
   },
 
@@ -88,26 +142,41 @@ export const apiService = {
       try {
         const remote = await requestRemote({ action: "register", username, email, password });
         if (remote.status === "success") return remote;
+        return remote;
       } catch {
-        // Fallback below.
+        // Local fallback below.
       }
     }
 
-    const users = readJson<Record<string, User>>(localUsersKey, {});
-    const user = { username, email };
+    if (findLocalAuthUser(username) || findLocalAuthUser(email)) {
+      return { status: "error", message: "Usuario ou e-mail local ja existe.", source: "local" };
+    }
+
+    const users = loadLocalUsers();
+    const authUsers = loadLocalAuthUsers();
+    const salt = makeLocalToken();
+    const user = { username, email, userId: makeLocalToken(), token: makeLocalToken() };
+    authUsers[username] = {
+      ...user,
+      salt,
+      passwordHash: await hashText(`${salt}:${password}`)
+    };
     users[username] = user;
+    writeJson(localAuthUsersKey, authUsers);
     writeJson(localUsersKey, users);
     return { status: "success", user, source: "local" };
   },
 
   async loadData(username: string): Promise<ApiResult<FinanceData>> {
+    const token = localStorage.getItem(sessionTokenKey(username)) || sessionStorage.getItem(sessionTokenKey(username)) || "";
     if (scriptUrl) {
       try {
         const remote = await requestRemote<FinanceData>({
           action: "load",
           username,
+          token,
           page: 1,
-          pageSize: 5000
+          pageSize: 10000
         });
         if (remote.status === "success") {
           const data = normalizeFinanceData(remote.data);
@@ -123,45 +192,34 @@ export const apiService = {
   },
 
   async saveData(username: string, data: FinanceData): Promise<ApiResult<FinanceData>> {
-    saveLocalData(username, data);
+    const normalized = normalizeFinanceData(data);
+    saveLocalData(username, normalized);
+    const token = localStorage.getItem(sessionTokenKey(username)) || sessionStorage.getItem(sessionTokenKey(username)) || "";
 
     if (!scriptUrl) {
-      return { status: "success", data, source: "local" };
+      return { status: "success", data: normalized, source: "local" };
     }
 
     try {
-      const saves = await Promise.all([
-        requestRemote({ action: "save", username, type: "transactions", data: data.transactions }),
-        requestRemote({ action: "save", username, type: "investments", data: data.investments }),
-        requestRemote({ action: "save", username, type: "vouchers", data: data.vouchers }),
-        requestRemote({ action: "save", username, type: "goals", data: data.goals })
-      ]);
-      const failed = saves.find((item) => item.status !== "success");
-      if (failed) return { status: "error", message: failed.message, data, source: "remote" };
-      return { status: "success", data, source: "remote" };
+      const remote = await requestRemote<FinanceData>({
+        action: "save_all",
+        username,
+        token,
+        data: normalized
+      });
+
+      if (remote.status === "success") {
+        return { status: "success", data: normalized, source: "remote" };
+      }
+
+      return { status: "error", message: remote.message, data: normalized, source: "remote" };
     } catch {
       return {
         status: "error",
         message: "Dados salvos localmente, mas a sincronizacao com a nuvem falhou.",
-        data,
+        data: normalized,
         source: "local"
       };
-    }
-  },
-
-  async requestAiInsight(username: string, prompt: string): Promise<ApiResult<{ text: string }>> {
-    if (!scriptUrl) {
-      return { status: "error", message: "IA remota nao configurada.", source: "local" };
-    }
-
-    try {
-      const remote = await requestRemote<unknown>({ action: "ai", username, prompt });
-      if (remote.status !== "success") return { status: "error", message: remote.message, source: "remote" };
-      const data = remote.data as { text?: string; candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-      const text = data?.text || data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return { status: "success", data: { text }, source: "remote" };
-    } catch {
-      return { status: "error", message: "Falha ao consultar IA remota.", source: "local" };
     }
   }
 };

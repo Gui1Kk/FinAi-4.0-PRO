@@ -1,844 +1,798 @@
 /**
- * FinAi - Google Apps Script Backend (V3 - Compatível com mês/ano + automações + CORS)
- * 
- * Estrutura:
- * - Abas por usuário: username_Transacoes, username_Investimentos, username_Vales, username_Metas, username_Templates
- * - Suporte completo a mês/ano (parâmetro year/month no payload — defaulta ao mês atual)
- * - dailyProcess() para automações (renovação vales, assinaturas, salários)
- * - CORS + JSON correto (sem tela branca)
- * - 100% compatível com frontend existente
+ * Nummi - Google Apps Script backend
+ *
+ * Deploy as Web App:
+ * - Execute as: Me
+ * - Who has access: Anyone with the link
+ *
+ * No external API key or AI credential is used here.
  */
 
+const APP = {
+  name: 'Nummi',
+  version: '2026.06.17',
+  usersSheet: '_Nummi_Users',
+  auditSheet: '_Nummi_Audit',
+  schemaVersion: 1
+};
+
+const COLLECTIONS = {
+  transactions: {
+    sheet: 'Transactions',
+    fields: ['id', 'description', 'amount', 'type', 'category', 'date', 'createdAt', 'note', 'recurrenceId']
+  },
+  investments: {
+    sheet: 'Investments',
+    fields: ['id', 'name', 'amount', 'type', 'isDeductible', 'createdAt']
+  },
+  investmentReturns: {
+    sheet: 'InvestmentReturns',
+    fields: ['id', 'investmentId', 'investmentName', 'month', 'amount', 'percent', 'note', 'createdAt']
+  },
+  vouchers: {
+    sheet: 'Vouchers',
+    fields: ['id', 'name', 'total', 'used', 'createdAt', 'history', 'autoRenew', 'renewDay', 'lastRenewedDate']
+  },
+  goals: {
+    sheet: 'Goals',
+    fields: ['id', 'name', 'current', 'target', 'targetDate', 'createdAt']
+  },
+  budgets: {
+    sheet: 'Budgets',
+    fields: ['id', 'category', 'amount', 'month', 'rollover', 'createdAt']
+  },
+  recurrences: {
+    sheet: 'Recurrences',
+    fields: ['id', 'description', 'amount', 'type', 'category', 'frequency', 'nextDate', 'active', 'autoPost', 'createdAt']
+  },
+  notifications: {
+    sheet: 'Notifications',
+    fields: ['id', 'title', 'message', 'type', 'createdAt', 'read', 'key']
+  },
+  notificationHistory: {
+    sheet: 'NotificationHistory',
+    fields: ['id', 'title', 'message', 'type', 'createdAt', 'read', 'key']
+  },
+  settings: {
+    sheet: 'Settings',
+    fields: [
+      'theme',
+      'soundEnabled',
+      'notificationsEnabled',
+      'budgetAlertPercent',
+      'voucherAlertPercent',
+      'bigExpenseAlertAmount',
+      'upcomingReminderDays',
+      'defaultDatePreset',
+      'compactMode'
+    ]
+  }
+};
+
+const NUMERIC_FIELDS = {
+  amount: true,
+  total: true,
+  used: true,
+  current: true,
+  target: true,
+  renewDay: true,
+  percent: true,
+  budgetAlertPercent: true,
+  voucherAlertPercent: true,
+  bigExpenseAlertAmount: true,
+  upcomingReminderDays: true
+};
+
+const BOOLEAN_FIELDS = {
+  isDeductible: true,
+  autoRenew: true,
+  rollover: true,
+  active: true,
+  autoPost: true,
+  read: true,
+  soundEnabled: true,
+  notificationsEnabled: true,
+  compactMode: true
+};
+
+function doGet() {
+  return responseJSON({
+    status: 'success',
+    app: APP.name,
+    version: APP.version,
+    schemaVersion: APP.schemaVersion,
+    message: 'Nummi backend online.'
+  });
+}
+
 function doPost(e) {
-  return handleRequest(e);
-}
-
-function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ status: 'error', message: 'Use POST requests' }))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-function handleRequest(e) {
   const lock = LockService.getScriptLock();
-  lock.tryLock(10000);
-
+  lock.waitLock(30000);
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const params = JSON.parse(e.postData.contents);
-    const action = params.action; // login, register, load, save
-    
-    // Request received (action logged only in debug builds)
+    const params = parseBody(e);
+    const action = String(params.action || '').trim();
+    const ss = getSpreadsheet();
 
-    // 1. SISTEMA DE AUTENTICAÇÃO
-    if (action === 'login') {
-      // login accepts username OR email + password
-      const identifier = params.username || params.email;
-      const password = params.password;
-      if (!identifier || !password) return responseJSON({ status: 'error', message: 'Identificador e senha são necessários.' });
-      const user = findUser(ss, identifier, password);
-      if (user) {
-        return responseJSON({ status: 'success', user: user });
-      }
-      // Login failed
-      return responseJSON({ status: 'error', message: 'Usuário ou senha incorretos.' });
+    if (action === 'ping') {
+      return responseJSON({ status: 'success', data: { app: APP.name, version: APP.version } });
     }
 
     if (action === 'register') {
-      const usernameParam = params.username;
-      const emailParam = params.email;
-      const password = params.password;
-      if (!usernameParam || !emailParam || !password) return responseJSON({ status: 'error', message: 'username, email e password são obrigatórios.' });
-      const result = registerUser(ss, usernameParam, emailParam, password);
-      // Register result processed
-      return responseJSON(result);
+      const username = String(params.username || '').trim();
+      const email = String(params.email || '').trim();
+      const password = String(params.password || '');
+      if (!username || !email || !password) {
+        return responseJSON({ status: 'error', message: 'username, email e password sao obrigatorios.' });
+      }
+      return responseJSON(registerUser(ss, username, email, password));
     }
 
-    // 2. OPERAÇÕES DE DADOS (Requer username)
-    const username = params.username;
-    if (!username) return responseJSON({ status: 'error', message: 'Usuário não identificado.' });
+    if (action === 'login') {
+      const identifier = String(params.username || params.email || '').trim();
+      const password = String(params.password || '');
+      if (!identifier || !password) {
+        return responseJSON({ status: 'error', message: 'Usuario/e-mail e senha sao obrigatorios.' });
+      }
+      const user = authenticateUser(ss, identifier, password);
+      if (!user) return responseJSON({ status: 'error', message: 'Credenciais invalidas.' });
+      user.token = createSessionToken(ss, user.userId, user.username);
+      appendAudit(ss, user.userId, 'login', {});
+      return responseJSON({ status: 'success', user: user });
+    }
 
-    // Prefixo para as abas do usuário (Ex: "joao_Transacoes")
-    const prefix = username + "_";
+    const username = String(params.username || '').trim();
+    if (!username) {
+      return responseJSON({ status: 'error', message: 'username e obrigatorio.' });
+    }
+    const userContext = requireSession(ss, username, params.token);
+    const userKey = userContext.userId;
 
     if (action === 'load') {
-      // Load request
-      try {
-        // support pagination: params.page (1-based) and params.pageSize
-        const page = Number(params.page) || 1;
-        const pageSize = Number(params.pageSize) || 50;
-        const transactionsAll = readSheet(ss, prefix + 'Transacoes') || [];
-        const transactionsPage = paginateArray(transactionsAll, page, pageSize);
-        const data = {
-          transactions: transactionsPage.items,
-          transactionsTotal: transactionsPage.total,
-          investments: readSheet(ss, prefix + 'Investimentos'),
-          vouchers: readSheet(ss, prefix + 'Vales'),
-          goals: readSheet(ss, prefix + 'Metas'),
-          templates: readSheet(ss, prefix + 'Templates')
-        };
-        // Load success
-        return responseJSON({ status: 'success', data: data });
-      } catch (loadErr) {
-        console.error('[handleRequest] Erro no load:', loadErr);
-        return responseJSON({ status: 'error', message: 'Erro ao carregar dados: ' + loadErr.toString() });
-      }
+      return responseJSON({ status: 'success', data: loadAll(ss, userKey) });
     }
 
-    if (action === 'save') {
-      const type = params.type; // transactions, investments...
-      const sheetName = getSheetName(type);
-      if (sheetName) {
-        // Before saving, ensure types are normalized:
-        // - ensure createdAt exists
-        // - coerce numeric fields to Number
-        // - coerce boolean fields to boolean
-        // - serialize arrays/objects to JSON strings for storage
-        const processed = (params.data || []).map(item => {
-          const copy = Object.assign({}, item);
-
-          // Ensure createdAt
-          if (!copy.createdAt) {
-            try {
-              copy.createdAt = formatDateIso(new Date());
-            } catch (e) {
-              copy.createdAt = (new Date()).toISOString().split('T')[0];
-            }
-          }
-
-          // Numeric fields to coerce
-          const numericFields = ['amount','total','used','yield','allocation','current','target','id'];
-          numericFields.forEach(f => {
-            if (copy[f] !== undefined && copy[f] !== null && copy[f] !== '') {
-              try { copy[f] = Number(copy[f]); } catch (e) { /* keep original */ }
-            }
-          });
-
-          // Boolean fields
-          const boolFields = ['isPaid','isRecurring','cancelled','isDeductible','autoRenew'];
-          boolFields.forEach(f => {
-            if (copy[f] === undefined || copy[f] === null) {
-              copy[f] = false;
-            } else {
-              if (typeof copy[f] === 'string') {
-                copy[f] = (copy[f].toLowerCase() === 'true');
-              } else {
-                copy[f] = !!copy[f];
-              }
-            }
-          });
-
-          // Dates normalization (keep as YYYY-MM-DD strings)
-          ['date','dueDate','createdAt','renewalDay'].forEach(f => {
-            if (copy[f] && Object.prototype.toString.call(copy[f]) === '[object Date]') {
-              copy[f] = formatDateIso(copy[f]);
-            }
-          });
-
-          // Serialize arrays/objects
-          ['history','meta'].forEach(f => {
-            if (copy[f] !== undefined && copy[f] !== null) {
-              if (typeof copy[f] === 'object') {
-                try { copy[f] = JSON.stringify(copy[f]); } catch (e) { copy[f] = String(copy[f]); }
-              } else if (typeof copy[f] === 'string' && copy[f].trim() === '') {
-                // empty string -> empty array
-                if (f === 'history') copy[f] = JSON.stringify([]);
-              }
-            }
-          });
-
-          // Ensure paymentMethod and category strings
-          if (copy.paymentMethod === undefined || copy.paymentMethod === null) copy.paymentMethod = '';
-          if (copy.category === undefined || copy.category === null) copy.category = '';
-
-          return copy;
-        });
-        saveSheet(ss, prefix + sheetName, processed);
-        return responseJSON({ status: 'success', message: 'Salvo!' });
-      }
+    if (action === 'save_all') {
+      validateCompleteData(params.data || {});
+      const data = normalizeFinanceData(params.data || {});
+      saveAll(ss, userKey, data);
+      appendAudit(ss, userKey, 'save_all', countCollections(data));
+      return responseJSON({ status: 'success', data: loadAll(ss, userKey) });
     }
 
-    // AI proxy endpoint: accept payload, forward to Gemini (key in Script Properties)
-    if (action === 'ai') {
-      try {
-        const scriptProps = PropertiesService.getScriptProperties();
-        const apiKey = scriptProps.getProperty('GEMINI_API_KEY');
-        const endpoint = scriptProps.getProperty('GEMINI_API_ENDPOINT');
-        if (!apiKey || !endpoint) return responseJSON({ status: 'error', message: 'AI key or endpoint not configured in Script Properties.' });
-        const prompt = params.prompt || params.data || '';
-        // Basic safety: limit prompt length
-        if (String(prompt).length > 20000) return responseJSON({ status: 'error', message: 'Prompt too long.' });
-        const aiRes = callGemini(endpoint, apiKey, prompt);
-        return responseJSON({ status: 'success', data: aiRes });
-      } catch (err) {
-        console.error('[handleRequest] AI proxy error:', err);
-        return responseJSON({ status: 'error', message: err.toString() });
+    if (action === 'save_collection') {
+      const collection = String(params.collection || params.type || '').trim();
+      if (!COLLECTIONS[collection]) {
+        return responseJSON({ status: 'error', message: 'Colecao invalida.' });
       }
+      saveCollection(ss, userKey, collection, params.data);
+      appendAudit(ss, userKey, 'save_collection', { collection: collection });
+      return responseJSON({ status: 'success', data: loadAll(ss, userKey) });
     }
 
-    // Export CSV endpoint
-    if (action === 'export') {
-      try {
-        const type = params.type || 'transactions';
-        const sheetName = prefix + (type === 'transactions' ? 'Transacoes' : type === 'investments' ? 'Investimentos' : type === 'vouchers' ? 'Vales' : type === 'goals' ? 'Metas' : 'Transacoes');
-        const dataArr = readSheet(ss, sheetName) || [];
-        const csv = toCsv(dataArr);
-        return responseJSON({ status: 'success', csv: csv });
-      } catch (err) {
-        console.error('[handleRequest] Export error:', err);
-        return responseJSON({ status: 'error', message: err.toString() });
+    if (action === 'export_csv') {
+      const collection = String(params.collection || 'transactions').trim();
+      if (!COLLECTIONS[collection]) {
+        return responseJSON({ status: 'error', message: 'Colecao invalida.' });
       }
+      return responseJSON({ status: 'success', data: { collection: collection, csv: exportCsv(ss, userKey, collection) } });
     }
 
-    // Import CSV (recebe CSV no params.csv ou array de objetos em params.data)
-    if (action === 'import') {
-      try {
-        // support CSV text or array of objects
-        const csvText = params.csv;
-        let items = [];
-        if (csvText) {
-          items = parseCsvToObjects(csvText);
-        } else if (params.data && Array.isArray(params.data)) {
-          items = params.data;
-        }
-        if (!items.length) return responseJSON({ status: 'error', message: 'Nenhum dado para importar.' });
-        // normalize and append to transactions sheet
-        const prefixName = prefix + 'Transacoes';
-        const existing = readSheet(ss, prefixName) || [];
-        const normalized = items.map(i => {
-          const copy = Object.assign({}, i);
-          if (!copy.createdAt) copy.createdAt = formatDateIso(new Date());
-          return copy;
-        });
-        const combined = existing.concat(normalized);
-        saveSheet(ss, prefixName, combined);
-        return responseJSON({ status: 'success', message: 'Importado', imported: normalized.length });
-      } catch (err) {
-        console.error('[handleRequest] Import error:', err);
-        return responseJSON({ status: 'error', message: err.toString() });
+    if (action === 'import_csv') {
+      const collection = String(params.collection || 'transactions').trim();
+      const csv = String(params.csv || '');
+      if (!COLLECTIONS[collection]) {
+        return responseJSON({ status: 'error', message: 'Colecao invalida.' });
       }
+      saveCollection(ss, userKey, collection, parseCsv(csv));
+      appendAudit(ss, userKey, 'import_csv', { collection: collection });
+      return responseJSON({ status: 'success', data: loadAll(ss, userKey) });
     }
 
-    // Archive old transactions (> 1 year) into Archive sheet
     if (action === 'archive') {
-      try {
-        const cutoffDays = Number(params.cutoffDays) || 365;
-        const moved = archiveOldTransactions(ss, prefix + 'Transacoes', prefix + 'Archive_Transacoes', cutoffDays);
-        return responseJSON({ status: 'success', moved: moved });
-      } catch (err) {
-        console.error('[handleRequest] Archive error:', err);
-        return responseJSON({ status: 'error', message: err.toString() });
-      }
+      archiveUserData(ss, userKey);
+      appendAudit(ss, userKey, 'archive', {});
+      return responseJSON({ status: 'success', message: 'Arquivo criado.' });
     }
 
-    // Chat history storage for AI conversations
-    if (action === 'save_chat') {
-      try {
-        const chat = params.chat; // { role: 'user'|'assistant', message: '...', metadata: {} }
-        if (!chat || !chat.message) return responseJSON({ status: 'error', message: 'Chat inválido.' });
-        const sheetName = prefix + 'AIChats';
-        appendObjectToSheet(ss, sheetName, { timestamp: new Date(), role: chat.role || 'user', message: chat.message, metadata: JSON.stringify(chat.metadata || {}) });
-        return responseJSON({ status: 'success' });
-      } catch (err) {
-        console.error('save_chat error', err);
-        return responseJSON({ status: 'error', message: err.toString() });
-      }
+    if (action === 'daily_process') {
+      const result = processUserDaily(ss, userKey, new Date());
+      appendAudit(ss, userKey, 'daily_process', result);
+      return responseJSON({ status: 'success', data: result });
     }
 
-    if (action === 'load_chats') {
-      try {
-        const page = Number(params.page) || 1;
-        const pageSize = Number(params.pageSize) || 50;
-        const chats = readSheet(ss, prefix + 'AIChats') || [];
-        const paged = paginateArray(chats, page, pageSize);
-        return responseJSON({ status: 'success', data: { chats: paged.items, total: paged.total } });
-      } catch (err) {
-        console.error('load_chats error', err);
-        return responseJSON({ status: 'error', message: err.toString() });
-      }
-    }
-
-    // Recurrence templates management
-    if (action === 'create_recurrence') {
-      try {
-        const rec = params.recurrence; // { id, description, amount, type, category, frequency, dayOfMonth, startDate }
-        if (!rec || !rec.description) return responseJSON({ status: 'error', message: 'Recurrence inválida.' });
-        const sheetName = prefix + 'Recurrences';
-        // ensure id exists for easy deletion/dedupe
-        const recToSave = Object.assign({ createdAt: new Date(), id: rec.id || (Date.now() + Math.floor(Math.random()*100000)) }, rec);
-        appendObjectToSheet(ss, sheetName, recToSave);
-        return responseJSON({ status: 'success' });
-      } catch (err) {
-        console.error('create_recurrence error', err);
-        return responseJSON({ status: 'error', message: err.toString() });
-      }
-    }
-
-    if (action === 'load_recurrences') {
-      try {
-        const recs = readSheet(ss, prefix + 'Recurrences') || [];
-        return responseJSON({ status: 'success', data: { recurrences: recs } });
-      } catch (err) {
-        console.error('load_recurrences error', err);
-        return responseJSON({ status: 'error', message: err.toString() });
-      }
-    }
-
-    // Delete recurrence by id
-    if (action === 'delete_recurrence') {
-      try {
-        const id = params.id || params.recurrenceId;
-        if (!id) return responseJSON({ status: 'error', message: 'id é obrigatório' });
-        const sheetName = prefix + 'Recurrences';
-        const recs = readSheet(ss, sheetName) || [];
-        const filtered = recs.filter(r => String(r.id) !== String(id));
-        saveSheet(ss, sheetName, filtered);
-        return responseJSON({ status: 'success' });
-      } catch (err) {
-        console.error('delete_recurrence error', err);
-        return responseJSON({ status: 'error', message: err.toString() });
-      }
-    }
-
-    // Budgets management
-    if (action === 'save_budget') {
-      try {
-        const budget = params.budget; // { category, month, year, amount }
-        if (!budget || !budget.category) return responseJSON({ status: 'error', message: 'Budget inválido.' });
-        const sheetName = prefix + 'Budgets';
-        const budgetToSave = Object.assign({ createdAt: new Date(), id: budget.id || (Date.now() + Math.floor(Math.random()*100000)) }, budget);
-        appendObjectToSheet(ss, sheetName, budgetToSave);
-        return responseJSON({ status: 'success' });
-      } catch (err) {
-        console.error('save_budget error', err);
-        return responseJSON({ status: 'error', message: err.toString() });
-      }
-    }
-
-    if (action === 'load_budgets') {
-      try {
-        const budgets = readSheet(ss, prefix + 'Budgets') || [];
-        return responseJSON({ status: 'success', data: { budgets } });
-      } catch (err) {
-        console.error('load_budgets error', err);
-        return responseJSON({ status: 'error', message: err.toString() });
-      }
-    }
-
-    // Delete budget by id
-    if (action === 'delete_budget') {
-      try {
-        const id = params.id || params.budgetId;
-        if (!id) return responseJSON({ status: 'error', message: 'id é obrigatório' });
-        const sheetName = prefix + 'Budgets';
-        const budgets = readSheet(ss, sheetName) || [];
-        const filtered = budgets.filter(b => String(b.id) !== String(id));
-        saveSheet(ss, sheetName, filtered);
-        return responseJSON({ status: 'success' });
-      } catch (err) {
-        console.error('delete_budget error', err);
-        return responseJSON({ status: 'error', message: err.toString() });
-      }
-    }
-
-    return responseJSON({ status: 'error', message: 'Ação desconhecida' });
-
-  } catch (error) {
-    console.error('Erro em handleRequest:', error);
-    return responseJSON({ status: 'error', message: error.toString() });
+    return responseJSON({ status: 'error', message: 'Acao desconhecida: ' + action });
+  } catch (err) {
+    return responseJSON({ status: 'error', message: err && err.message ? err.message : String(err) });
   } finally {
-    try { lock.releaseLock(); } catch (e) { /* ignore */ }
+    lock.releaseLock();
   }
 }
 
-/* ========== FUNÇÕES DE USUÁRIO ========== */
-
-function getUsersSheet(ss) {
-  let sheet = ss.getSheetByName('_System_Users');
-  if (!sheet) {
-    sheet = ss.insertSheet('_System_Users');
-      sheet.appendRow(['username', 'email', 'password_hash', 'salt', 'created_at']);
-    try { sheet.hideSheet(); } catch (e) { /* permissões */ }
+function parseBody(e) {
+  if (!e) return {};
+  if (e.postData && e.postData.contents) {
+    const raw = e.postData.contents;
+    try {
+      return JSON.parse(raw);
+    } catch (err) {
+      return e.parameter || {};
+    }
   }
+  return e.parameter || {};
+}
+
+function getSpreadsheet() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
+  if (spreadsheetId) return SpreadsheetApp.openById(spreadsheetId);
+  const active = SpreadsheetApp.getActiveSpreadsheet();
+  if (!active) throw new Error('Nenhuma planilha ativa. Vincule o script a uma planilha ou configure SPREADSHEET_ID.');
+  return active;
+}
+
+function responseJSON(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function ensureUsersSheet(ss) {
+  let sheet = ss.getSheetByName(APP.usersSheet);
+  if (!sheet) sheet = ss.insertSheet(APP.usersSheet);
+  const headers = ['username', 'email', 'password_hash', 'salt', 'created_at', 'last_login', 'user_id', 'session_token', 'session_expires'];
+  ensureHeaders(sheet, headers);
   return sheet;
 }
 
+function registerUser(ss, username, email, password) {
+  const sheet = ensureUsersSheet(ss);
+  const rows = sheet.getDataRange().getValues();
+  const normalizedUsername = username.toLowerCase();
+  const normalizedEmail = email.toLowerCase();
 
-
-function findUser(ss, identifier, password) {
-  const sheet = getUsersSheet(ss);
-  const data = sheet.getDataRange().getValues();
-  // Header detection
-  const headers = data[0] ? data[0].map(h => String(h || '').toLowerCase()) : [];
-  const usernameIdx = headers.indexOf('username');
-  const emailIdx = headers.indexOf('email');
-  const hashIdx = headers.indexOf('password_hash');
-  const saltIdx = headers.indexOf('salt');
-  const plainPasswordIdx = headers.indexOf('password');
-
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    const rowUsername = usernameIdx >= 0 ? row[usernameIdx] : row[0];
-    const rowEmail = emailIdx >= 0 ? row[emailIdx] : '';
-    // match identifier against username or email
-    if (String(rowUsername).toLowerCase() === String(identifier).toLowerCase() || (rowEmail && String(rowEmail).toLowerCase() === String(identifier).toLowerCase())) {
-      // If stored as hash
-      if (hashIdx >= 0 && saltIdx >= 0 && row[hashIdx]) {
-        const storedHash = String(row[hashIdx] || '');
-        const storedSalt = String(row[saltIdx] || '');
-        const attempted = hashWithSalt(password, storedSalt);
-        if (attempted === storedHash) return { username: rowUsername, email: rowEmail };
-      }
-      // Backwards compatibility: if old sheet stored plain password
-      if (plainPasswordIdx >= 0 && row[plainPasswordIdx] && String(row[plainPasswordIdx]) === String(password)) {
-        // upgrade: generate salt/hash and store back
-        try {
-          const newSalt = generateSalt();
-          const newHash = hashWithSalt(password, newSalt);
-          // write back into sheet
-          const writeRow = sheet.getRange(i+1, 1, 1, Math.max(headers.length,5));
-          const newRow = [];
-          newRow[usernameIdx >=0 ? usernameIdx : 0] = rowUsername;
-          newRow[emailIdx >=0 ? emailIdx : 1] = rowEmail || '';
-          newRow[hashIdx >=0 ? hashIdx : 2] = newHash;
-          newRow[saltIdx >=0 ? saltIdx : 3] = newSalt;
-          newRow[4] = row[4] || new Date();
-          writeRow.setValues([newRow]);
-        } catch (e) { console.error('Upgrade hash failed:', e); }
-        return { username: rowUsername, email: rowEmail };
-      }
+  for (let i = 1; i < rows.length; i += 1) {
+    const existingUser = String(rows[i][0] || '').toLowerCase();
+    const existingEmail = String(rows[i][1] || '').toLowerCase();
+    if (existingUser === normalizedUsername || existingEmail === normalizedEmail) {
+      return { status: 'error', message: 'Usuario ou email ja existe.' };
     }
   }
+
+  const userId = Utilities.getUuid();
+  const salt = makeSalt();
+  const hash = hashPassword(password, salt);
+  const session = makeSession();
+  sheet.appendRow([username, email, hash, salt, new Date(), new Date(), userId, session.token, session.expires]);
+  appendAudit(ss, userId, 'register', {});
+  return {
+    status: 'success',
+    message: 'Usuario criado.',
+    user: { username: username, email: email, userId: userId, token: session.token }
+  };
+}
+
+function authenticateUser(ss, identifier, password) {
+  const sheet = ensureUsersSheet(ss);
+  const rows = sheet.getDataRange().getValues();
+  const normalized = identifier.toLowerCase();
+
+  for (let i = 1; i < rows.length; i += 1) {
+    const username = String(rows[i][0] || '');
+    const email = String(rows[i][1] || '');
+    const hash = String(rows[i][2] || '');
+    const salt = String(rows[i][3] || '');
+    if (username.toLowerCase() !== normalized && email.toLowerCase() !== normalized) continue;
+    if (hashPassword(password, salt) !== hash) return null;
+    let userId = String(rows[i][6] || '');
+    if (!userId) {
+      userId = Utilities.getUuid();
+      sheet.getRange(i + 1, 7).setValue(userId);
+    }
+    sheet.getRange(i + 1, 6).setValue(new Date());
+    return { username: username, email: email, userId: userId };
+  }
+
   return null;
 }
 
-function registerUser(ss, username, email, password) {
-  const sheet = getUsersSheet(ss);
-  const data = sheet.getDataRange().getValues();
-  // Header indexes
-  const headers = data[0] ? data[0].map(h => String(h || '').toLowerCase()) : [];
-  const usernameIdx = headers.indexOf('username');
-  const emailIdx = headers.indexOf('email');
-
-  // Check for existing username/email
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    const existingUser = usernameIdx >= 0 ? row[usernameIdx] : row[0];
-    const existingEmail = emailIdx >= 0 ? row[emailIdx] : (row[1] || '');
-    if (String(existingUser).toLowerCase() === String(username).toLowerCase() || (existingEmail && String(existingEmail).toLowerCase() === String(email).toLowerCase())) {
-      return { status: 'error', message: 'Usuário ou email já existe.' };
-    }
-  }
-
-  const salt = generateSalt();
-  const hash = hashWithSalt(password, salt);
-  sheet.appendRow([username, email, hash, salt, new Date()]);
-  return { status: 'success', message: 'Usuário criado!', user: { username: username, email: email } };
+function makeSession() {
+  const expires = new Date();
+  expires.setDate(expires.getDate() + 30);
+  return { token: Utilities.getUuid() + ':' + Utilities.getUuid(), expires: expires };
 }
 
-function readSheet(ss, sheetName) {
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) return [];
+function createSessionToken(ss, userId, username) {
+  const sheet = ensureUsersSheet(ss);
   const rows = sheet.getDataRange().getValues();
-  if (rows.length <= 1) return [];
-  const headers = rows[0].map(h => String(h || '').trim());
-  return rows.slice(1).map(row => {
-    let obj = {};
-    headers.forEach((header, index) => {
-      let val = row[index];
-      obj[header] = val;
-    });
-    return obj;
-  });
-}
-
-function saveSheet(ss, sheetName, data) {
-  let sheet = ss.getSheetByName(sheetName);
-  if (!sheet) sheet = ss.insertSheet(sheetName);
-  sheet.clearContents();
-  if (!data || data.length === 0) return;
-  const headers = Object.keys(data[0]);
-  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-  const rows = data.map(item => headers.map(header => {
-    const v = item[header];
-    if (v === null || v === undefined) return '';
-    if (typeof v === 'object') return JSON.stringify(v);
-    return String(v);
-  }));
-  sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
-}
-
-// Pagination helper: returns items for page (1-based) and total count
-function paginateArray(arr, page, pageSize) {
-  const total = arr.length || 0;
-  if (!total) return { items: [], total: 0 };
-  // try to sort by date or createdAt descending
-  const copy = arr.slice();
-  copy.sort((a, b) => {
-    const da = new Date(a.date || a.createdAt || '1970-01-01');
-    const db = new Date(b.date || b.createdAt || '1970-01-01');
-    return db - da;
-  });
-  const start = (page - 1) * pageSize;
-  const items = copy.slice(start, start + pageSize);
-  return { items: items, total: total };
-}
-
-// Convert array of objects to CSV string
-function toCsv(arr) {
-  if (!arr || !arr.length) return '';
-  const headers = Object.keys(arr[0]);
-  const escape = function(v) {
-    if (v === null || v === undefined) return '';
-    const s = String(v);
-    if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
-      return '"' + s.replace(/"/g, '""') + '"';
+  const session = makeSession();
+  for (let i = 1; i < rows.length; i += 1) {
+    const rowUserId = String(rows[i][6] || '');
+    const rowUsername = String(rows[i][0] || '');
+    if (rowUserId === String(userId) || rowUsername.toLowerCase() === String(username || '').toLowerCase()) {
+      sheet.getRange(i + 1, 8).setValue(session.token);
+      sheet.getRange(i + 1, 9).setValue(session.expires);
+      return session.token;
     }
-    return s;
-  };
-  const lines = [];
-  lines.push(headers.join(','));
-  arr.forEach(item => {
-    const row = headers.map(h => escape(item[h]));
-    lines.push(row.join(','));
-  });
-  return lines.join('\n');
-}
-
-// Append object (map) to sheet, creating sheet with headers if needed
-function appendObjectToSheet(ss, sheetName, obj) {
-  let sheet = ss.getSheetByName(sheetName);
-  if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
-    const headers = Object.keys(obj);
-    sheet.getRange(1,1,1,headers.length).setValues([headers]);
   }
-  const headers = sheet.getDataRange().getValues()[0].map(h => String(h));
-  const row = headers.map(h => {
-    const v = obj[h];
-    if (v === null || v === undefined) return '';
-    if (typeof v === 'object') return JSON.stringify(v);
-    if (v instanceof Date) return formatDateIso(v);
-    return String(v);
-  });
-  sheet.appendRow(row);
+  throw new Error('Usuario nao encontrado para sessao.');
 }
 
-// Simple CSV parser returning array of objects (headers from first line)
-function parseCsvToObjects(csvText) {
-  const lines = String(csvText).split(/\r?\n/).filter(l => l.trim() !== '');
-  if (!lines.length) return [];
-  const headers = lines[0].split(',').map(h => h.trim());
-  const out = [];
-  for (let i = 1; i < lines.length; i++) {
-    const parts = lines[i].split(',');
-    const obj = {};
-    headers.forEach((h, idx) => { obj[h] = parts[idx] !== undefined ? parts[idx] : ''; });
-    out.push(obj);
+function requireSession(ss, username, token) {
+  const sheet = ensureUsersSheet(ss);
+  const rows = sheet.getDataRange().getValues();
+  const normalized = String(username || '').toLowerCase();
+  const providedToken = String(token || '');
+  if (!providedToken) throw new Error('Sessao ausente. Faca login novamente.');
+
+  for (let i = 1; i < rows.length; i += 1) {
+    const rowUsername = String(rows[i][0] || '');
+    const rowEmail = String(rows[i][1] || '');
+    let userId = String(rows[i][6] || '');
+    const rowToken = String(rows[i][7] || '');
+    const expires = rows[i][8] instanceof Date ? rows[i][8] : new Date(String(rows[i][8] || ''));
+    const matchesUser = rowUsername.toLowerCase() === normalized || rowEmail.toLowerCase() === normalized;
+    if (!matchesUser) continue;
+    if (!userId) {
+      userId = Utilities.getUuid();
+      sheet.getRange(i + 1, 7).setValue(userId);
+    }
+    if (rowToken !== providedToken || !expires || expires.getTime() < new Date().getTime()) {
+      throw new Error('Sessao expirada. Faca login novamente.');
+    }
+    return { username: rowUsername, email: rowEmail, userId: userId };
   }
-  return out;
+
+  throw new Error('Usuario nao encontrado.');
 }
 
-// Archive transactions older than cutoffDays (returns number moved)
-function archiveOldTransactions(ss, sourceSheetName, archiveSheetName, cutoffDays) {
-  const src = readSheet(ss, sourceSheetName) || [];
-  if (!src.length) return 0;
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - cutoffDays);
-  const toMove = [];
-  const keep = [];
-  src.forEach(r => {
-    const dstr = r.date || r.createdAt || null;
-    const d = dstr ? new Date(dstr) : null;
-    if (d && d < cutoff) toMove.push(r); else keep.push(r);
-  });
-  if (toMove.length === 0) return 0;
-  // save remaining
-  saveSheet(ss, sourceSheetName, keep);
-  // append to archive sheet
-  let archive = ss.getSheetByName(archiveSheetName);
-  if (!archive) {
-    archive = ss.insertSheet(archiveSheetName);
-    // set headers
-    const headers = Object.keys(toMove[0]);
-    archive.getRange(1,1,1,headers.length).setValues([headers]);
-  }
-  const existing = readSheet(ss, archiveSheetName) || [];
-  const combined = existing.concat(toMove);
-  saveSheet(ss, archiveSheetName, combined);
-  return toMove.length;
+function makeSalt() {
+  return Utilities.getUuid() + ':' + new Date().getTime();
 }
 
-// Simple AI proxy call - adapt endpoint/body to your Gemini API needs
-function callGemini(endpoint, apiKey, prompt) {
-  const payload = { prompt: String(prompt) };
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + apiKey },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-  const res = UrlFetchApp.fetch(endpoint, options);
-  const code = res.getResponseCode();
-  const body = res.getContentText();
-  if (code >= 200 && code < 300) {
-    try { return JSON.parse(body); } catch (e) { return { text: body }; }
-  }
-  throw new Error('AI request failed: ' + code + ' - ' + body);
-}
-
-// Hash helpers
-function generateSalt() {
-  const bytes = Utilities.getUuid().replace(/-/g, '').slice(0, 16);
-  return bytes;
-}
-
-function hashWithSalt(password, salt) {
-  const raw = salt + '|' + password;
-  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, raw, Utilities.Charset.UTF_8);
-  return digest.map(function(b){
-    var v = (b < 0) ? b + 256 : b;
-    return (v.toString(16).length == 1) ? '0' + v.toString(16) : v.toString(16);
+function hashPassword(password, salt) {
+  const digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    String(salt) + ':' + String(password),
+    Utilities.Charset.UTF_8
+  );
+  return digest.map(function (byte) {
+    const value = (byte + 256) % 256;
+    return ('0' + value.toString(16)).slice(-2);
   }).join('');
 }
 
-function responseJSON(data) {
-  return ContentService.createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
+function loadAll(ss, username) {
+  const data = {};
+  Object.keys(COLLECTIONS).forEach(function (collection) {
+    const records = readCollection(ss, username, collection);
+    data[collection] = collection === 'settings' ? normalizeSettings(records[0] || {}) : records;
+  });
+  return normalizeFinanceData(data);
 }
 
-/* ========== DAILY PROCESS (Automações) ========== */
+function saveAll(ss, username, data) {
+  const normalized = normalizeFinanceData(data);
+  Object.keys(COLLECTIONS).forEach(function (collection) {
+    saveCollection(ss, username, collection, normalized[collection]);
+  });
+}
+
+function validateCompleteData(data) {
+  const required = [
+    'transactions',
+    'investments',
+    'investmentReturns',
+    'vouchers',
+    'goals',
+    'budgets',
+    'recurrences',
+    'notifications',
+    'notificationHistory'
+  ];
+  required.forEach(function (collection) {
+    if (!Array.isArray(data[collection])) {
+      throw new Error('Payload incompleto: colecao ausente ' + collection);
+    }
+  });
+  if (!data.settings || typeof data.settings !== 'object') {
+    throw new Error('Payload incompleto: settings ausente.');
+  }
+}
+
+function saveCollection(ss, username, collection, value) {
+  const def = COLLECTIONS[collection];
+  if (!def) throw new Error('Colecao invalida: ' + collection);
+  const sheet = ensureCollectionSheet(ss, username, collection);
+  const records = collection === 'settings' ? [normalizeSettings(value || {})] : normalizeArray(value);
+  const rows = records.map(function (record) {
+    return def.fields.map(function (field) {
+      return serializeCell(record[field]);
+    });
+  });
+
+  const tempName = ('_tmp_' + sheet.getName() + '_' + new Date().getTime()).slice(0, 99);
+  const tempSheet = ss.insertSheet(tempName);
+  tempSheet.getRange(1, 1, 1, def.fields.length).setValues([def.fields]);
+  if (rows.length) {
+    tempSheet.getRange(2, 1, rows.length, def.fields.length).setValues(rows);
+  }
+
+  sheet.clearContents();
+  const tempValues = tempSheet.getDataRange().getValues();
+  sheet.getRange(1, 1, tempValues.length, def.fields.length).setValues(tempValues);
+  ss.deleteSheet(tempSheet);
+  sheet.autoResizeColumns(1, def.fields.length);
+}
+
+function readCollection(ss, username, collection) {
+  const def = COLLECTIONS[collection];
+  const sheet = ensureCollectionSheet(ss, username, collection);
+  const range = sheet.getDataRange();
+  const values = range.getValues();
+  if (values.length <= 1) return [];
+  const headers = values[0].map(function (header) {
+    return String(header || '');
+  });
+
+  return values.slice(1).filter(rowHasValue).map(function (row) {
+    const record = {};
+    headers.forEach(function (header, index) {
+      if (!header) return;
+      record[header] = parseCell(header, row[index]);
+    });
+    return record;
+  });
+}
+
+function ensureCollectionSheet(ss, username, collection) {
+  const def = COLLECTIONS[collection];
+  const name = collectionSheetName(username, def.sheet);
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
+  ensureHeaders(sheet, def.fields);
+  return sheet;
+}
+
+function ensureHeaders(sheet, headers) {
+  const current = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+  const missing = headers.some(function (header, index) {
+    return String(current[index] || '') !== header;
+  });
+  if (missing) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+  }
+}
+
+function collectionSheetName(username, suffix) {
+  const safe = sanitizeName(username);
+  return ('N_' + safe + '_' + suffix).slice(0, 99);
+}
+
+function sanitizeName(value) {
+  const safe = String(value || 'user')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return safe || 'user';
+}
+
+function normalizeFinanceData(data) {
+  data = data || {};
+  return {
+    transactions: normalizeArray(data.transactions),
+    investments: normalizeArray(data.investments),
+    investmentReturns: normalizeArray(data.investmentReturns),
+    vouchers: normalizeArray(data.vouchers).map(function (item) {
+      item.history = normalizeHistory(item.history);
+      item.autoRenew = toBoolean(item.autoRenew);
+      item.renewDay = Number(item.renewDay || 1);
+      return item;
+    }),
+    goals: normalizeArray(data.goals),
+    budgets: normalizeArray(data.budgets),
+    recurrences: normalizeArray(data.recurrences),
+    notifications: normalizeArray(data.notifications),
+    notificationHistory: normalizeArray(data.notificationHistory),
+    settings: normalizeSettings(data.settings || {})
+  };
+}
+
+function normalizeArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  return [value];
+}
+
+function normalizeSettings(value) {
+  value = value || {};
+  return {
+    theme: value.theme === 'light' ? 'light' : 'dark',
+    soundEnabled: value.soundEnabled === undefined ? true : toBoolean(value.soundEnabled),
+    notificationsEnabled: value.notificationsEnabled === undefined ? true : toBoolean(value.notificationsEnabled),
+    budgetAlertPercent: Number(value.budgetAlertPercent || 90),
+    voucherAlertPercent: Number(value.voucherAlertPercent || 15),
+    bigExpenseAlertAmount: Number(value.bigExpenseAlertAmount || 500),
+    upcomingReminderDays: Number(value.upcomingReminderDays || 3),
+    defaultDatePreset: String(value.defaultDatePreset || 'currentMonth'),
+    compactMode: value.compactMode === undefined ? false : toBoolean(value.compactMode)
+  };
+}
+
+function normalizeHistory(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(String(value));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function serializeCell(value) {
+  if (value === undefined || value === null) return '';
+  if (value instanceof Date) return Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+  if (Array.isArray(value) || typeof value === 'object') return JSON.stringify(value);
+  if (typeof value === 'string') return escapeSheetText(value);
+  return value;
+}
+
+function escapeSheetText(value) {
+  if (/^[=+\-@]/.test(value)) return "'" + value;
+  return value;
+}
+
+function parseCell(field, value) {
+  if (value === '' || value === null || value === undefined) {
+    if (BOOLEAN_FIELDS[field]) return false;
+    if (NUMERIC_FIELDS[field]) return 0;
+    return '';
+  }
+  if (NUMERIC_FIELDS[field]) return Number(value) || 0;
+  if (BOOLEAN_FIELDS[field]) return toBoolean(value);
+  if (field === 'history') return normalizeHistory(value);
+  return value instanceof Date ? Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd') : value;
+}
+
+function toBoolean(value) {
+  if (value === true) return true;
+  if (value === false) return false;
+  const normalized = String(value || '').toLowerCase();
+  return normalized === 'true' || normalized === '1' || normalized === 'sim' || normalized === 'yes';
+}
+
+function rowHasValue(row) {
+  return row.some(function (cell) {
+    return cell !== '' && cell !== null && cell !== undefined;
+  });
+}
+
+function countCollections(data) {
+  const counts = {};
+  Object.keys(COLLECTIONS).forEach(function (collection) {
+    counts[collection] = Array.isArray(data[collection]) ? data[collection].length : 1;
+  });
+  return counts;
+}
+
+function exportCsv(ss, username, collection) {
+  const def = COLLECTIONS[collection];
+  const rows = [def.fields].concat(
+    readCollection(ss, username, collection).map(function (record) {
+      return def.fields.map(function (field) {
+        return serializeCell(record[field]);
+      });
+    })
+  );
+  return rows.map(function (row) {
+    return row.map(csvCell).join(';');
+  }).join('\n');
+}
+
+function csvCell(value) {
+  const text = String(value === undefined || value === null ? '' : value);
+  return '"' + text.replace(/"/g, '""') + '"';
+}
+
+function parseCsv(csv) {
+  const lines = String(csv || '').split(/\r?\n/).filter(function (line) {
+    return line.trim() !== '';
+  });
+  if (!lines.length) return [];
+  const headers = splitCsvLine(lines[0]);
+  return lines.slice(1).map(function (line) {
+    const cells = splitCsvLine(line);
+    const record = {};
+    headers.forEach(function (header, index) {
+      record[header] = cells[index] || '';
+    });
+    return record;
+  });
+}
+
+function splitCsvLine(line) {
+  const result = [];
+  let current = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    const next = line[i + 1];
+    if (char === '"' && quoted && next === '"') {
+      current += '"';
+      i += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if ((char === ';' || char === ',') && !quoted) {
+      result.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current);
+  return result;
+}
+
+function archiveUserData(ss, username) {
+  const archiveName = ('N_Archive_' + sanitizeName(username) + '_' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyyMMdd_HHmmss')).slice(0, 99);
+  const sheet = ss.insertSheet(archiveName);
+  const data = loadAll(ss, username);
+  sheet.getRange(1, 1).setValue(JSON.stringify(data, null, 2));
+  sheet.autoResizeColumn(1);
+}
+
+function appendAudit(ss, username, action, details) {
+  let sheet = ss.getSheetByName(APP.auditSheet);
+  if (!sheet) sheet = ss.insertSheet(APP.auditSheet);
+  ensureHeaders(sheet, ['created_at', 'username', 'action', 'details']);
+  sheet.appendRow([new Date(), username || '', action || '', JSON.stringify(details || {})]);
+}
 
 function dailyProcess() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const usersSheet = getUsersSheet(ss);
-  const users = usersSheet.getDataRange().getValues().slice(1).map(r => r[0]).filter(Boolean);
-  
-  const today = new Date();
-  const yyyy = today.getFullYear();
-  const mm = today.getMonth() + 1; // 1-12
-  
-  users.forEach(username => {
-    try {
-      processUserDaily(ss, username, yyyy, mm, today);
-    } catch (e) {
-      console.error(`Erro processando usuário ${username}:`, e);
-    }
-  });
-  
-  console.log(`dailyProcess concluído para ${users.length} usuários em ${yyyy}-${String(mm).padStart(2,'0')}`);
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const ss = getSpreadsheet();
+    const users = readUsers(ss);
+    const today = new Date();
+    const results = users.map(function (user) {
+      try {
+        return {
+          username: user.username,
+          result: processUserDaily(ss, user.userId, today)
+        };
+      } catch (err) {
+        return {
+          username: user.username,
+          error: err && err.message ? err.message : String(err)
+        };
+      }
+    });
+    appendAudit(ss, 'system', 'dailyProcess', { users: results.length });
+    return results;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
-function processUserDaily(ss, username, year, month, today) {
-  const prefix = username + "_";
-  const todayStr = formatDateIso(today);
-  
-  // Carregar dados
-  const transactions = readSheet(ss, prefix + 'Transacoes') || [];
-  const vouchers = readSheet(ss, prefix + 'Vales') || [];
-  
-  let modified = false;
-  
-  // Helper: detectar se transação já existe
-  function existsTransactionWithDesc(desc) {
-    return transactions.some(t => (t.description || '') === desc && (t.date || '').slice(0,7) === todayStr.slice(0,7));
-  }
-  
-  // 1) RENOVAR VALES
-  vouchers.forEach(v => {
-    if (v.cancelled) return;
-    if (v.autoRenew && v.renewalDay) {
-      const renewDay = Number(v.renewalDay || 1);
-      if (renewDay === today.getDate()) {
-        const desc = `Vale: ${v.name} (Renovação)`;
-        if (!existsTransactionWithDesc(desc)) {
-          const newTx = {
-            id: Date.now() + Math.floor(Math.random()*10000),
-            description: desc,
-            amount: Number(v.total || 0),
-            type: 'income',
-            category: 'Vales',
-            date: todayStr,
-            paymentMethod: 'Vale',
-            isRecurring: false,
-            frequency: '',
-            meta: JSON.stringify({ source: 'voucher_renew', voucherId: v.id || null })
-          };
-          transactions.push(newTx);
-          modified = true;
-        }
-        v.used = 0;
-        v.history = JSON.stringify([]);
-      }
-    }
+function readUsers(ss) {
+  const sheet = ensureUsersSheet(ss);
+  const values = sheet.getDataRange().getValues();
+  return values.slice(1).filter(rowHasValue).map(function (row) {
+    return { username: String(row[0] || ''), email: String(row[1] || ''), userId: String(row[6] || row[0] || '') };
+  }).filter(function (user) {
+    return user.username && user.userId;
   });
-  
-  // 2) ASSINATURAS RECORRENTES
-  const subscriptions = transactions.filter(t => (t.category || '').toLowerCase() === 'assinatura' && t.isRecurring);
-  subscriptions.forEach(sub => {
-    if (sub.cancelled) return;
-    
-    let dueDay = null;
-    if (sub.dueDate) {
-      try { dueDay = new Date(sub.dueDate).getDate(); } catch (e) {}
-    }
-    if (!dueDay && sub.date) {
-      try { dueDay = new Date(sub.date).getDate(); } catch (e) {}
-    }
-    
-    if (dueDay && dueDay === today.getDate()) {
-      const desc = `${sub.description} (Cobrança)`;
-      if (!existsTransactionWithDesc(desc)) {
-        const newTx = {
-          id: Date.now() + Math.floor(Math.random()*10000),
-          description: desc,
-          amount: Number(sub.amount || 0),
-          type: 'expense',
-          category: 'Assinatura',
-          date: todayStr,
-          dueDate: todayStr,
-          paymentMethod: sub.paymentMethod || '',
-          isRecurring: true,
-          frequency: sub.frequency || 'mensal',
-          meta: JSON.stringify({ source: 'subscription_rec', subscriptionId: sub.id || null })
-        };
-        transactions.push(newTx);
-        modified = true;
-      }
-    }
-  });
-  
-  // 3) SALÁRIOS RECORRENTES
-  const salaries = transactions.filter(t => (t.category || '').toLowerCase() === 'salario' && t.isRecurring);
-  salaries.forEach(sal => {
-    if (sal.cancelled) return;
-    
-    let payDay = sal.dayOfMonth || null;
-    if (!payDay && sal.date) {
-      try { payDay = new Date(sal.date).getDate(); } catch (e) {}
-    }
-    
-    if (payDay && payDay === today.getDate()) {
-      const desc = `${sal.description} (Salário)`;
-      if (!existsTransactionWithDesc(desc)) {
-        const newTx = {
-          id: Date.now() + Math.floor(Math.random()*10000),
-          description: desc,
-          amount: Number(sal.amount || 0),
-          type: 'income',
-          category: 'Salario',
-          date: todayStr,
-          paymentMethod: sal.paymentMethod || '',
-          isRecurring: true,
-          frequency: sal.frequency || 'mensal',
-          meta: JSON.stringify({ source: 'salary_rec', salaryId: sal.id || null })
-        };
-        transactions.push(newTx);
-        modified = true;
-      }
-    }
-  });
-  
-  // Salvar dados modificados
-  if (modified) {
-    saveSheet(ss, prefix + 'Transacoes', transactions);
-    if (vouchers.some(v => v.used !== undefined)) {
-      saveSheet(ss, prefix + 'Vales', vouchers);
-    }
+}
 
-    // 4) PROCESSAR RECORRÊNCIAS (Recurrences sheet)
-    try {
-      const recs = readSheet(ss, prefix + 'Recurrences') || [];
-      recs.forEach(r => {
-        try {
-          if (!r || !r.description) return;
-          if (r.cancelled) return;
-          const freq = String((r.frequency || '').toLowerCase() || 'mensal');
-          let shouldRun = false;
-          if (freq === 'diario' || freq === 'daily') {
-            shouldRun = true;
-          } else if (freq === 'semanal' || freq === 'weekly') {
-            // expect r.dayOfWeek = 0(Sun)-6(Sat) or comma list
-            const dow = r.dayOfWeek !== undefined && r.dayOfWeek !== null ? String(r.dayOfWeek) : (r.day || '');
-            if (dow) {
-              const todayDow = today.getDay();
-              const parts = String(dow).split(',').map(x => Number(x));
-              if (parts.indexOf(todayDow) >= 0) shouldRun = true;
-            }
-          } else if (freq === 'anual' || freq === 'yearly') {
-            // expect month and day
-            const m = Number(r.month) || null;
-            const d = Number(r.dayOfMonth || r.day) || null;
-            if (m && d) {
-              if (today.getMonth() + 1 === m && today.getDate() === d) shouldRun = true;
-            }
-          } else { // mensal / monthly default
-            const dm = Number(r.dayOfMonth || r.day) || null;
-            if (dm && dm === today.getDate()) shouldRun = true;
-          }
+function processUserDaily(ss, username, today) {
+  const data = loadAll(ss, username);
+  const todayIso = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const todayDay = Number(Utilities.formatDate(today, Session.getScriptTimeZone(), 'd'));
+  let posted = 0;
+  let renewed = 0;
 
-          if (shouldRun) {
-            const desc = `Recorrência: ${r.description}`;
-            // avoid duplicates for same recurrence in same month
-            const exists = transactions.some(t => (t.meta && String(t.meta).indexOf(`recurrenceId:${r.id}`) >= 0) || (t.description || '') === desc && (t.date || '').slice(0,7) === todayStr.slice(0,7));
-            if (!exists) {
-              const newTx = {
-                id: Date.now() + Math.floor(Math.random()*10000),
-                description: desc,
-                amount: Number(r.amount || 0),
-                type: r.type || 'expense',
-                category: r.category || (r.type === 'income' ? 'Salario' : 'Geral'),
-                date: todayStr,
-                paymentMethod: r.paymentMethod || '',
-                isRecurring: true,
-                frequency: r.frequency || 'mensal',
-                meta: JSON.stringify({ source: 'recurrence', recurrenceId: r.id || null })
-              };
-              transactions.push(newTx);
-              modified = true;
-            }
-          }
-        } catch (e) { console.error('recurrence process failed for', r, e); }
+  const transactions = data.transactions.slice();
+  const recurrences = data.recurrences.map(function (recurrence) {
+    if (!toBoolean(recurrence.active) || !toBoolean(recurrence.autoPost)) return recurrence;
+    let guard = 0;
+    let nextDate = String(recurrence.nextDate || todayIso);
+    while (nextDate <= todayIso && guard < 24) {
+      const alreadyExists = transactions.some(function (transaction) {
+        return String(transaction.recurrenceId || '') === String(recurrence.id || '') && String(transaction.date || '') === nextDate;
       });
-    } catch (e) { console.error('Erro processando recurrences:', e); }
+      if (!alreadyExists) {
+        transactions.unshift({
+          id: Utilities.getUuid(),
+          description: recurrence.description,
+          amount: Number(recurrence.amount || 0),
+          type: recurrence.type || 'expense',
+          category: recurrence.category || 'Geral',
+          date: nextDate,
+          createdAt: todayIso,
+          note: 'Gerado automaticamente pelo Nummi',
+          recurrenceId: recurrence.id
+        });
+        posted += 1;
+      }
+      nextDate = nextDateForFrequency(nextDate, recurrence.frequency || 'monthly');
+      guard += 1;
+    }
+    recurrence.nextDate = nextDate;
+    return recurrence;
+  });
+
+  const vouchers = data.vouchers.map(function (voucher) {
+    if (
+      toBoolean(voucher.autoRenew) &&
+      Number(voucher.renewDay || 1) === todayDay &&
+      Number(voucher.used || 0) > 0 &&
+      String(voucher.lastRenewedDate || '') !== todayIso
+    ) {
+      voucher.used = 0;
+      voucher.lastRenewedDate = todayIso;
+      renewed += 1;
+    }
+    return voucher;
+  });
+
+  const notifications = data.notifications.slice();
+  const notificationHistory = data.notificationHistory.slice();
+  if (posted > 0 && !notifications.some(function (item) { return item.key === 'daily-post:' + todayIso; })) {
+    const notification = {
+      id: Utilities.getUuid(),
+      title: 'Recorrencias lancadas',
+      message: posted + ' lancamento(s) automatico(s) criado(s).',
+      type: 'info',
+      createdAt: todayIso,
+      read: false,
+      key: 'daily-post:' + todayIso
+    };
+    notifications.unshift(notification);
+    notificationHistory.unshift(notification);
   }
+  if (renewed > 0 && !notifications.some(function (item) { return item.key === 'daily-voucher:' + todayIso; })) {
+    const notification = {
+      id: Utilities.getUuid(),
+      title: 'Vales renovados',
+      message: renewed + ' vale(s) renovado(s).',
+      type: 'success',
+      createdAt: todayIso,
+      read: false,
+      key: 'daily-voucher:' + todayIso
+    };
+    notifications.unshift(notification);
+    notificationHistory.unshift(notification);
+  }
+
+  saveAll(ss, username, Object.assign({}, data, {
+    transactions: transactions,
+    recurrences: recurrences,
+    vouchers: vouchers,
+    notifications: notifications.slice(0, 80),
+    notificationHistory: notificationHistory.slice(0, 500)
+  }));
+
+  return { posted: posted, renewed: renewed };
 }
 
-function formatDateIso(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+function nextDateForFrequency(date, frequency) {
+  const parsed = new Date(String(date) + 'T00:00:00');
+  if (frequency === 'weekly') parsed.setDate(parsed.getDate() + 7);
+  else if (frequency === 'yearly') parsed.setFullYear(parsed.getFullYear() + 1);
+  else parsed.setMonth(parsed.getMonth() + 1);
+  return Utilities.formatDate(parsed, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
-/**
- * installDailyTrigger()
- * Execute uma vez para criar gatilho diário
- */
 function installDailyTrigger() {
   const triggers = ScriptApp.getProjectTriggers();
-  triggers.forEach(t => {
-    if (t.getHandlerFunction() === 'dailyProcess') {
-      ScriptApp.deleteTrigger(t);
+  triggers.forEach(function (trigger) {
+    if (trigger.getHandlerFunction() === 'dailyProcess') {
+      ScriptApp.deleteTrigger(trigger);
     }
   });
-  
   ScriptApp.newTrigger('dailyProcess')
     .timeBased()
     .everyDays(1)
     .atHour(3)
     .create();
-  
-  return 'Trigger instalado: dailyProcess executará diariamente às 03:00 UTC';
-}
-
-function getSheetName(type) {
-  // Mapeia o "type" que vem do frontend para o nome da aba na planilha
-  if (type === 'transactions') return 'Transacoes';
-  if (type === 'investments') return 'Investimentos';
-  if (type === 'vouchers') return 'Vales';
-  if (type === 'goals') return 'Metas';
-  if (type === 'templates') return 'Templates';
-  if (type === 'chats') return 'AIChats'; 
-  return null;
+  return 'Trigger instalado: dailyProcess executara diariamente.';
 }
