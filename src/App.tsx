@@ -31,7 +31,7 @@ import {
   X
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { apiService, hasRemoteBackend } from "./services/api";
+import { apiService } from "./services/api";
 import type {
   Budget,
   DatePreset,
@@ -64,6 +64,7 @@ import {
   makeId,
   normalizeFinanceData,
   parseNumber,
+  processDueAutomations,
   resolveDateRange,
   todayIso,
   toMonthKey
@@ -301,11 +302,39 @@ function AuthScreen({ onLogin }: AuthScreenProps) {
   const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [connectionStatus, setConnectionStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [connectionMessage, setConnectionMessage] = useState("Verificando conexao com o Apps Script...");
+
+  useEffect(() => {
+    let mounted = true;
+    apiService.checkConnection().then((result) => {
+      if (!mounted) return;
+      if (result.status === "success") {
+        setConnectionStatus("online");
+        setConnectionMessage("Apps Script conectado e pronto para uso.");
+        return;
+      }
+      setConnectionStatus("offline");
+      setConnectionMessage(result.message || "Apps Script offline ou nao configurado.");
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setLoading(true);
     setError("");
+
+    const connection = await apiService.checkConnection();
+    if (connection.status !== "success") {
+      setLoading(false);
+      setConnectionStatus("offline");
+      setConnectionMessage(connection.message || "Apps Script offline ou nao configurado.");
+      setError("Conecte o Apps Script para entrar ou criar conta.");
+      return;
+    }
 
     const result = isRegister
       ? await apiService.register(username.trim(), email.trim(), password)
@@ -333,8 +362,13 @@ function AuthScreen({ onLogin }: AuthScreenProps) {
         </div>
 
         <form className="form-stack" onSubmit={handleSubmit}>
+          <div className={cx("connection-banner", `connection-banner--${connectionStatus}`)}>
+            {connectionStatus === "checking" ? <LoaderCircle className="spin" size={16} /> : connectionStatus === "online" ? <Cloud size={16} /> : <CloudOff size={16} />}
+            <span>{connectionMessage}</span>
+          </div>
+
           <label>
-            Usuario ou e-mail
+            {isRegister ? "Usuario" : "Usuario ou e-mail"}
             <input value={username} onChange={(event) => setUsername(event.target.value)} required autoComplete="username" />
           </label>
 
@@ -366,7 +400,7 @@ function AuthScreen({ onLogin }: AuthScreenProps) {
 
           <button className="primary-button" disabled={loading} type="submit">
             {loading ? <LoaderCircle className="spin" size={18} /> : null}
-            {isRegister ? "Criar conta" : "Entrar"}
+            {isRegister ? "Criar conta no Apps Script" : "Entrar"}
           </button>
         </form>
 
@@ -386,6 +420,7 @@ function Dashboard({ user, onLogout }: DashboardProps) {
   const [toast, setToast] = useState<ToastState | null>(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [budgetMonth, setBudgetMonth] = useState(currentMonthKey());
+  const [overviewMonth, setOverviewMonth] = useState(currentMonthKey());
   const [transactionQuery, setTransactionQuery] = useState("");
   const [transactionDateFilter, setTransactionDateFilter] = useState<DateFilterState>({
     preset: "currentMonth",
@@ -444,19 +479,25 @@ function Dashboard({ user, onLogout }: DashboardProps) {
     autoPost: false
   });
 
-  const summary = useMemo(() => calculateSummary(data, budgetMonth), [data, budgetMonth]);
+  const summary = useMemo(() => calculateSummary(data, overviewMonth), [data, overviewMonth]);
+  const budgetSummary = useMemo(() => calculateSummary(data, budgetMonth), [data, budgetMonth]);
   const expensesByCategory = useMemo(
-    () => groupByAmount(data.transactions.filter((item) => item.type === "expense"), "category", "amount"),
-    [data.transactions]
+    () =>
+      groupByAmount(
+        data.transactions.filter((item) => item.type === "expense" && toMonthKey(item.date) === overviewMonth),
+        "category",
+        "amount"
+      ),
+    [data.transactions, overviewMonth]
   );
   const currentExpensesByCategory = useMemo(
     () =>
       groupByAmount(
-        data.transactions.filter((item) => item.type === "expense" && toMonthKey(item.date) === budgetMonth),
+        data.transactions.filter((item) => item.type === "expense" && toMonthKey(item.date) === overviewMonth),
         "category",
         "amount"
       ),
-    [data.transactions, budgetMonth]
+    [data.transactions, overviewMonth]
   );
   const investmentsByType = useMemo(() => groupByAmount(data.investments, "type", "amount"), [data.investments]);
   const investmentReturnsByMonth = useMemo(
@@ -487,13 +528,16 @@ function Dashboard({ user, onLogout }: DashboardProps) {
     apiService.loadData(user.username).then((result) => {
       if (!mounted) return;
       if (result.status === "success" && result.data) {
-        const normalized = normalizeFinanceData(result.data);
+        const normalized = evaluateAlerts(processDueAutomations(normalizeFinanceData(result.data)));
         setData(normalized);
+        if (JSON.stringify(normalized) !== JSON.stringify(result.data)) {
+          void apiService.saveData(user.username, normalized);
+        }
         setTransactionDateFilter((current) => ({
           ...current,
           preset: normalized.settings.defaultDatePreset || "currentMonth"
         }));
-        setSyncStatus(result.source === "remote" ? "online" : "local");
+        setSyncStatus("online");
       } else {
         setSyncStatus("error");
         showToast(result.message || "Nao foi possivel carregar os dados.", "error", false);
@@ -640,11 +684,11 @@ function Dashboard({ user, onLogout }: DashboardProps) {
     setSyncStatus("saving");
     const result = await apiService.saveData(user.username, withAlerts);
     if (result.status === "success") {
-      setSyncStatus(result.source === "remote" ? "online" : "local");
-      showToast(successMessage, result.source === "remote" ? "success" : "warning");
+      setSyncStatus("online");
+      showToast(successMessage, "success");
     } else {
       setSyncStatus("error");
-      showToast(result.message || "Dados salvos localmente, mas a nuvem falhou.", "warning");
+      showToast(result.message || "Nao foi possivel salvar no Apps Script.", "error");
     }
   };
 
@@ -1171,6 +1215,8 @@ function Dashboard({ user, onLogout }: DashboardProps) {
           <DashboardView
             data={data}
             summary={summary}
+            month={overviewMonth}
+            setMonth={setOverviewMonth}
             expensesByCategory={expensesByCategory}
             investmentsByType={investmentsByType}
             privacyMode={privacyMode}
@@ -1210,7 +1256,7 @@ function Dashboard({ user, onLogout }: DashboardProps) {
             form={budgetForm}
             month={budgetMonth}
             privacyMode={privacyMode}
-            summary={summary}
+            summary={budgetSummary}
             onCancel={resetBudgetForm}
             onDelete={deleteBudget}
             onEdit={editBudget}
@@ -1303,8 +1349,8 @@ function Dashboard({ user, onLogout }: DashboardProps) {
             expensesByCategory={expensesByCategory}
             currentExpensesByCategory={currentExpensesByCategory}
             privacyMode={privacyMode}
-            month={budgetMonth}
-            setMonth={setBudgetMonth}
+            month={overviewMonth}
+            setMonth={setOverviewMonth}
           />
         ) : null}
 
@@ -1363,15 +1409,15 @@ function SyncBadge({ status }: { status: SyncStatus }) {
     return (
       <span className="sync-badge sync-badge--error">
         <CloudOff size={16} />
-        Nuvem indisponivel
+        Apps Script offline
       </span>
     );
   }
 
   return (
-    <span className="sync-badge sync-badge--local">
+    <span className="sync-badge sync-badge--offline">
       <CloudOff size={16} />
-      Modo local{hasRemoteBackend ? " / fallback" : ""}
+      Apps Script desconectado
     </span>
   );
 }
@@ -1432,6 +1478,8 @@ function NotificationsPanel({
 function DashboardView({
   data,
   summary,
+  month,
+  setMonth,
   expensesByCategory,
   investmentsByType,
   privacyMode,
@@ -1440,12 +1488,20 @@ function DashboardView({
 }: {
   data: FinanceData;
   summary: FinancialSummary;
+  month: string;
+  setMonth: (value: string) => void;
   expensesByCategory: Array<{ label: string; value: number }>;
   investmentsByType: Array<{ label: string; value: number }>;
   privacyMode: boolean;
   onEditGoal: (goal: Goal) => void;
   onSelectView: (view: View) => void;
 }) {
+  const monthTransactions = data.transactions.filter((item) => toMonthKey(item.date) === month);
+  const previousMonthDate = new Date(`${month}-02T00:00:00`);
+  previousMonthDate.setMonth(previousMonthDate.getMonth() - 1);
+  const previousMonth = previousMonthDate.toISOString().slice(0, 7);
+  const previousSummary = calculateSummary(data, previousMonth);
+  const balanceDelta = summary.balance - previousSummary.balance;
   const upcoming = data.recurrences
     .filter((item) => item.active)
     .sort((a, b) => a.nextDate.localeCompare(b.nextDate))
@@ -1453,11 +1509,24 @@ function DashboardView({
 
   return (
     <div className="page-grid">
+      <section className="month-hero panel panel--wide">
+        <div>
+          <span>Competencia mensal</span>
+          <h2>{month}</h2>
+          <p>Ao virar o mes, os novos lancamentos entram em uma nova competencia. Use o seletor para voltar ao historico de qualquer mes.</p>
+        </div>
+        <label>
+          Ver mes
+          <input className="compact-input" value={month} onChange={(event) => setMonth(event.target.value)} type="month" />
+        </label>
+      </section>
+
       <div className="metric-grid">
         <MetricCard label="Entradas" value={summary.income} icon={TrendingUp} tone="good" privacyMode={privacyMode} />
         <MetricCard label="Saidas" value={summary.expense} icon={TrendingDown} tone="bad" privacyMode={privacyMode} />
         <MetricCard label="Saldo livre" value={summary.balance} icon={WalletCards} tone="blue" privacyMode={privacyMode} />
         <MetricCard label="Patrimonio estimado" value={summary.netWorth} icon={PiggyBank} tone="warm" privacyMode={privacyMode} />
+        <MetricCard label="Variacao vs mes anterior" value={balanceDelta} icon={BarChart3} tone={balanceDelta >= 0 ? "good" : "bad"} privacyMode={privacyMode} />
       </div>
 
       <section className="panel">
@@ -1483,9 +1552,9 @@ function DashboardView({
             Ver todos
           </button>
         </div>
-        {data.transactions.length ? (
+        {monthTransactions.length ? (
           <div className="simple-list">
-            {data.transactions.slice(0, 7).map((item) => (
+            {monthTransactions.slice(0, 7).map((item) => (
               <div key={item.id}>
                 <span className={cx("dot", item.type === "income" ? "dot--good" : "dot--bad")} />
                 <p>{item.description}</p>
@@ -1495,7 +1564,7 @@ function DashboardView({
             ))}
           </div>
         ) : (
-          <EmptyState title="Nenhum lancamento ainda." action="Cadastre entradas e saidas para gerar a visao geral." />
+          <EmptyState title="Nenhum lancamento ainda." action="Cadastre entradas e saidas deste mes para gerar a visao geral." />
         )}
       </section>
 
@@ -2569,7 +2638,7 @@ function ReportsView({
     <div className="reports-layout">
       <section className="report-hero">
         <div>
-          <span>Relatorio local</span>
+          <span>Relatorio mensal</span>
           <h2>{Math.round(healthScore)} pontos</h2>
           <p>Indicador gerado no navegador, sem consumir token ou chamar servico externo.</p>
         </div>
