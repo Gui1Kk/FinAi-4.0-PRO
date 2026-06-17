@@ -1,6 +1,6 @@
 export type TransactionType = "income" | "expense";
 
-export type SyncStatus = "idle" | "loading" | "saving" | "online" | "local" | "error";
+export type SyncStatus = "idle" | "loading" | "saving" | "online" | "offline" | "error";
 
 export type ThemeMode = "light" | "dark";
 
@@ -162,5 +162,5 @@ export interface ApiResult<T = unknown> {
   data?: T;
   user?: User;
   message?: string;
-  source?: "remote" | "local";
+  source?: "remote";
 }

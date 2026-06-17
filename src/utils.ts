@@ -133,19 +133,58 @@ export const daysBetween = (from: string, to: string) => {
 };
 
 export const calculateNextDate = (date: string, frequency: RecurrenceFrequency) => {
-  const base = new Date(`${date || todayIso()}T00:00:00`);
+  const source = date || todayIso();
+  const base = new Date(`${source}T00:00:00`);
+  const day = base.getDate();
   if (frequency === "weekly") base.setDate(base.getDate() + 7);
-  if (frequency === "monthly") base.setMonth(base.getMonth() + 1);
+  if (frequency === "monthly") {
+    const next = new Date(base.getFullYear(), base.getMonth() + 1, 1);
+    const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+    next.setDate(Math.min(day, lastDay));
+    return toIsoDate(next);
+  }
   if (frequency === "yearly") base.setFullYear(base.getFullYear() + 1);
   return base.toISOString().slice(0, 10);
 };
 
+export const processDueAutomations = (data: FinanceData, until = todayIso()): FinanceData => {
+  let next = normalizeFinanceData(data);
+  const generated: Transaction[] = [];
+  const recurrences = next.recurrences.map((recurrence) => {
+    if (!recurrence.active || !recurrence.autoPost) return recurrence;
+    let nextDate = recurrence.nextDate || until;
+    let guard = 0;
+    while (nextDate <= until && guard < 36) {
+      const alreadyExists = next.transactions.some(
+        (item) => item.recurrenceId === recurrence.id && item.date === nextDate
+      );
+      if (!alreadyExists) generated.push({ ...buildTransactionFromRecurrence({ ...recurrence, nextDate }), date: nextDate });
+      nextDate = calculateNextDate(nextDate, recurrence.frequency);
+      guard += 1;
+    }
+    return { ...recurrence, nextDate };
+  });
+
+  const vouchers = next.vouchers.map((voucher) => {
+    if (!voucher.autoRenew) return voucher;
+    const renewDate = `${until.slice(0, 7)}-${String(Math.max(1, Math.min(28, voucher.renewDay || 1))).padStart(2, "0")}`;
+    if (renewDate <= until && voucher.lastRenewedDate !== renewDate) {
+      return { ...voucher, used: 0, lastRenewedDate: renewDate };
+    }
+    return voucher;
+  });
+
+  return { ...next, transactions: [...generated, ...next.transactions], recurrences, vouchers };
+};
+
 export const calculateSummary = (data: FinanceData, month = currentMonthKey()): FinancialSummary => {
-  const income = data.transactions
+  const monthTransactions = data.transactions.filter((item) => toMonthKey(item.date) === month);
+
+  const income = monthTransactions
     .filter((item) => item.type === "income")
     .reduce((total, item) => total + Number(item.amount || 0), 0);
 
-  const expense = data.transactions
+  const expense = monthTransactions
     .filter((item) => item.type === "expense")
     .reduce((total, item) => total + Number(item.amount || 0), 0);
 
@@ -164,9 +203,7 @@ export const calculateSummary = (data: FinanceData, month = currentMonthKey()): 
   const budgeted = monthBudgets.reduce((total, budget) => total + Number(budget.amount || 0), 0);
   const budgetedCategories = new Set(monthBudgets.map((budget) => budget.category));
 
-  const expensesThisMonth = data.transactions.filter(
-    (item) => item.type === "expense" && toMonthKey(item.date) === month
-  );
+  const expensesThisMonth = monthTransactions.filter((item) => item.type === "expense");
   const budgetSpent = expensesThisMonth
     .filter((item) => budgetedCategories.has(item.category))
     .reduce((total, item) => total + Number(item.amount || 0), 0);
